@@ -3,8 +3,9 @@ import json
 import time
 import httpx
 from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
@@ -19,10 +20,10 @@ app = FastAPI(title="Rail-lovable Scraper", version="1.0.0")
 # Enable CORS for Lovable frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure this more restrictively in production
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
+    allow_credentials=False,
 )
 
 class ScrapeRequest(BaseModel):
@@ -129,8 +130,32 @@ async def health_check():
         "time": now_iso()
     }
 
+@app.options("/scrape-now")
+async def scrape_now_options():
+    """CORS preflight handler for /scrape-now"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
+@app.options("/scrape-now/")
+async def scrape_now_options_trailing():
+    """CORS preflight handler for /scrape-now/ (with trailing slash)"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
 @app.post("/scrape-now")
-async def scrape_now(request: ScrapeRequest):
+async def scrape_now(request: ScrapeRequest, http_request: Request):
     """
     On-demand scraping endpoint for Lovable.
     Immediately scrapes the provided query and stores results.
@@ -140,8 +165,11 @@ async def scrape_now(request: ScrapeRequest):
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     
+    # Get client IP
+    client_ip = http_request.client.host if http_request.client else "unknown"
+    
     # Log the incoming request
-    print(f"[api] {now_iso()} Manual scrape request: '{query}'")
+    print(f"[api] {now_iso()} Manual scrape request from {client_ip}: '{query}'")
     
     try:
         # Step 1: Call scraper
@@ -200,12 +228,12 @@ async def scrape_now(request: ScrapeRequest):
             "efBody": ef_body
         }
         
-        print(f"[api] Request completed successfully: {query}")
+        print(f"[api] Request completed successfully: {query} (client: {client_ip})")
         return response
         
     except httpx.HTTPStatusError as e:
         error_msg = f"Scraper HTTP error: {e.response.status_code}"
-        print(f"[api] ERROR: {error_msg}")
+        print(f"[api] ERROR: {error_msg} (client: {client_ip})")
         raise HTTPException(
             status_code=502, 
             detail={
@@ -216,7 +244,7 @@ async def scrape_now(request: ScrapeRequest):
         )
     except Exception as e:
         error_msg = f"Scraping failed: {str(e)}"
-        print(f"[api] ERROR: {error_msg}")
+        print(f"[api] ERROR: {error_msg} (client: {client_ip})")
         raise HTTPException(
             status_code=502,
             detail={
@@ -225,6 +253,11 @@ async def scrape_now(request: ScrapeRequest):
                 "step": "scraper"
             }
         )
+
+@app.post("/scrape-now/")
+async def scrape_now_trailing(request: ScrapeRequest, http_request: Request):
+    """Handle /scrape-now/ (with trailing slash) - redirect to main handler"""
+    return await scrape_now(request, http_request)
 
 if __name__ == "__main__":
     # Get port from environment (Railway sets PORT)
@@ -239,6 +272,12 @@ if __name__ == "__main__":
     if railway_url:
         print(f"[api] Deployed at: https://{railway_url}")
         print(f"[api] Scrape endpoint: https://{railway_url}/scrape-now")
+        print(f"[api] Health endpoint: https://{railway_url}/health")
+    else:
+        print(f"[api] Local development - no Railway URL available")
+        print(f"[api] Local endpoints:")
+        print(f"[api]   - Health: http://localhost:{port}/health")
+        print(f"[api]   - Scrape: http://localhost:{port}/scrape-now")
     
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=port) 
