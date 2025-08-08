@@ -16,15 +16,14 @@ if not SCRAPER_BASE_URL:
     print("Please set it in Railway dashboard: Variables → Add Variable")
     exit(1)
 
+# Make Edge Function optional for testing
 if not SUPABASE_FUNCTION_URL:
-    print("ERROR: SUPABASE_FUNCTION_URL environment variable is required")
-    print("Please set it in Railway dashboard: Variables → Add Variable")
-    exit(1)
+    print("WARNING: SUPABASE_FUNCTION_URL not set - will only scrape, not store results")
+    SUPABASE_FUNCTION_URL = None
 
 if not SUPABASE_FUNCTION_TOKEN:
-    print("ERROR: SUPABASE_FUNCTION_TOKEN environment variable is required")
-    print("Please set it in Railway dashboard: Variables → Add Variable")
-    exit(1)
+    print("WARNING: SUPABASE_FUNCTION_TOKEN not set - will only scrape, not store results")
+    SUPABASE_FUNCTION_TOKEN = None
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -87,8 +86,15 @@ async def process_query(query: str):
     print(f"[cron] {started} scraping: {query}")
     try:
         payload = await scrape(query)
-        result = await post_to_edge_function(payload)
-        print(f"[cron] ok: {query} -> {result}")
+        print(f"[cron] scraped: {query} -> {payload}")
+        
+        # Only post to Edge Function if configured
+        if SUPABASE_FUNCTION_URL and SUPABASE_FUNCTION_TOKEN:
+            result = await post_to_edge_function(payload)
+            print(f"[cron] stored: {query} -> {result}")
+        else:
+            print(f"[cron] skipped storage (Edge Function not configured)")
+            
     except Exception as e:
         print(f"[cron] error: {query} -> {e}")
 
