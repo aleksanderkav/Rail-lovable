@@ -56,23 +56,50 @@ On-demand scraping endpoint for Lovable integration.
 **Response:**
 ```json
 {
-  "success": true,
-  "query": "Pikachu Base Set 1st Edition PSA 10",
-  "scrape_data": { /* full scrape results */ },
-  "storage_result": { /* storage status */ },
-  "timing": {
-    "scrape_time_seconds": 5.23,
-    "total_time_seconds": 6.45
-  },
-  "timestamp": "2025-08-08T16:30:00.000000Z"
+  "ok": true,
+  "items": [
+    {
+      "title": "Pikachu Base Set 1st Edition PSA 10",
+      "url": "https://ebay.com/...",
+      "id": "123456789",
+      "price": 1500.0,
+      "currency": "USD",
+      "ended_at": "2025-08-15T00:00:00Z",
+      "source": "ebay"
+    }
+  ],
+  "externalOk": true,
+  "efStatus": 200,
+  "efBody": "{\"success\": true}"
+}
+```
+
+**Error Response:**
+```json
+{
+  "ok": false,
+  "error": "Scraper HTTP error: 500",
+  "step": "scraper"
 }
 ```
 
 ### GET /
 Health check endpoint.
+```json
+{
+  "ok": true,
+  "service": "rail-lovable"
+}
+```
 
 ### GET /health
-Detailed health check with configuration status.
+Detailed health check.
+```json
+{
+  "ok": true,
+  "time": "2025-08-08T16:30:00.000000Z"
+}
+```
 
 ## Notes
 - If you don't want DB lookups yet, use HARDCODED_QUERIES in scheduled_scraper.py.
