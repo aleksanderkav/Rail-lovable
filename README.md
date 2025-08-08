@@ -6,14 +6,17 @@ Lightweight Railway worker that:
 3) Posts the payload to your Supabase Edge Function (`$SUPABASE_FUNCTION_URL`) for storage.
 
 ## Env vars (set in Railway)
-- SCRAPER_BASE_URL: https://scraper-production-22f6.up.railway.app
-- SUPABASE_FUNCTION_URL: <Edge Function URL>
-- SUPABASE_FUNCTION_TOKEN: <Anon or Service Role key for EF auth>
-- SUPABASE_URL (optional): <Supabase base URL>
-- SUPABASE_SERVICE_ROLE_KEY (optional): <Service role key>
-- BATCH_LIMIT (default 20)
-- SLEEP_JITTER_SECS (default 2.0)
-- REQUEST_TIMEOUT_SECS (default 60)
+**Required:**
+- `SCRAPER_BASE_URL`: https://scraper-production-22f6.up.railway.app
+- `SUPABASE_FUNCTION_URL`: Your Supabase Edge Function URL
+- `SUPABASE_FUNCTION_TOKEN`: Anon or Service Role key for Edge Function auth
+
+**Optional:**
+- `SUPABASE_URL`: https://zuhazlfmgcrmajnxijsm.supabase.co (for database queries)
+- `SUPABASE_SERVICE_ROLE_KEY`: Service role key (for database access)
+- `BATCH_LIMIT`: 20 (default)
+- `SLEEP_JITTER_SECS`: 2.0 (default)
+- `REQUEST_TIMEOUT_SECS`: 60 (default)
 
 ## Run locally
 ```bash
@@ -35,4 +38,14 @@ python scheduled_scraper.py
 ## Notes
 - If you don't want DB lookups yet, use HARDCODED_QUERIES in scheduled_scraper.py.
 - CORS doesn't apply (server-to-server).
-- If the Edge Function requires auth, pass SUPABASE_FUNCTION_TOKEN in the Authorization header. 
+- If the Edge Function requires auth, pass SUPABASE_FUNCTION_TOKEN in the Authorization header.
+
+## Troubleshooting
+
+**Container crashes on startup:**
+- Check that all required environment variables are set in Railway dashboard
+- Look for "ERROR:" messages in the logs for specific missing variables
+
+**No queries running:**
+- If using database: Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
+- If not using database: The script will use hardcoded sample queries 

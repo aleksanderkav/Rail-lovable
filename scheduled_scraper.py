@@ -5,9 +5,26 @@ import time
 import httpx
 from datetime import datetime, timezone
 
-SCRAPER_BASE_URL = os.environ["SCRAPER_BASE_URL"]
-SUPABASE_FUNCTION_URL = os.environ["SUPABASE_FUNCTION_URL"]
-SUPABASE_FUNCTION_TOKEN = os.environ["SUPABASE_FUNCTION_TOKEN"]
+# Required environment variables
+SCRAPER_BASE_URL = os.getenv("SCRAPER_BASE_URL")
+SUPABASE_FUNCTION_URL = os.getenv("SUPABASE_FUNCTION_URL")
+SUPABASE_FUNCTION_TOKEN = os.getenv("SUPABASE_FUNCTION_TOKEN")
+
+# Validate required environment variables
+if not SCRAPER_BASE_URL:
+    print("ERROR: SCRAPER_BASE_URL environment variable is required")
+    print("Please set it in Railway dashboard: Variables → Add Variable")
+    exit(1)
+
+if not SUPABASE_FUNCTION_URL:
+    print("ERROR: SUPABASE_FUNCTION_URL environment variable is required")
+    print("Please set it in Railway dashboard: Variables → Add Variable")
+    exit(1)
+
+if not SUPABASE_FUNCTION_TOKEN:
+    print("ERROR: SUPABASE_FUNCTION_TOKEN environment variable is required")
+    print("Please set it in Railway dashboard: Variables → Add Variable")
+    exit(1)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -18,8 +35,8 @@ REQUEST_TIMEOUT_SECS = float(os.getenv("REQUEST_TIMEOUT_SECS", "60"))
 
 # For first runs without DB, you can hardcode sample queries:
 HARDCODED_QUERIES = [
-    # "Pikachu Base Set 1st Edition PSA 10",
-    # "Charizard Base Set Unlimited Holo PSA 8",
+    "Pikachu Base Set 1st Edition PSA 10",
+    "Charizard Base Set Unlimited Holo PSA 8",
 ]
 
 def now_iso():
@@ -77,6 +94,10 @@ async def process_query(query: str):
 
 async def main():
     print(f"[cron] started {now_iso()}")
+    print(f"[cron] SCRAPER_BASE_URL: {SCRAPER_BASE_URL}")
+    print(f"[cron] SUPABASE_FUNCTION_URL: {SUPABASE_FUNCTION_URL}")
+    print(f"[cron] SUPABASE_URL: {SUPABASE_URL or 'Not set (using hardcoded queries)'}")
+    
     queries = await fetch_tracked_queries()
     if not queries:
         print("[cron] no queries to run (enable SUPABASE_URL/SERVICE_ROLE_KEY or set HARDCODED_QUERIES).")
