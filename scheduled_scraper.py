@@ -17,12 +17,12 @@ if not SCRAPER_BASE_URL:
     exit(1)
 
 # Make Edge Function optional for testing
-if not SUPABASE_FUNCTION_URL:
-    print("WARNING: SUPABASE_FUNCTION_URL not set - will only scrape, not store results")
+if not SUPABASE_FUNCTION_URL or SUPABASE_FUNCTION_URL == "<your-supabase-edge-function-url>":
+    print("WARNING: SUPABASE_FUNCTION_URL not set or is placeholder - will only scrape, not store results")
     SUPABASE_FUNCTION_URL = None
 
-if not SUPABASE_FUNCTION_TOKEN:
-    print("WARNING: SUPABASE_FUNCTION_TOKEN not set - will only scrape, not store results")
+if not SUPABASE_FUNCTION_TOKEN or SUPABASE_FUNCTION_TOKEN == "<anon-or-service-role-key>":
+    print("WARNING: SUPABASE_FUNCTION_TOKEN not set or is placeholder - will only scrape, not store results")
     SUPABASE_FUNCTION_TOKEN = None
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
