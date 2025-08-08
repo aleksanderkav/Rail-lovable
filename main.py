@@ -17,12 +17,18 @@ from scheduled_scraper import (
     now_iso
 )
 
+# Timeout constants
+SCRAPER_TIMEOUT = 12.0
+EF_TIMEOUT = 8.0
+GLOBAL_TIMEOUT = 25.0
+
 # Global HTTP client with strict timeouts
 http_client = httpx.AsyncClient(
     timeout=httpx.Timeout(
         connect=5.0,
         read=12.0,
-        write=12.0
+        write=12.0,
+        pool=30.0
     )
 )
 
@@ -40,7 +46,7 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     """Initialize HTTP client on startup"""
-    print(f"[api] Starting up with strict timeouts: connect=5s, read=12s, write=12s")
+    print(f"[api] Starting up with strict timeouts: connect=5s, read={SCRAPER_TIMEOUT}s, write={SCRAPER_TIMEOUT}s")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -300,7 +306,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
     print(f"[api] {now_iso()} Manual scrape request from {client_ip}: '{query}' (trace: {trace_id})")
     
     # Global timeout for entire request (25 seconds max)
-    async with asyncio.timeout(25.0):
+    async with asyncio.timeout(GLOBAL_TIMEOUT):
         try:
             # Step 1: Call scraper with timeout
             print(f"[api] Step 1: Starting scraper call (trace: {trace_id})")
@@ -309,13 +315,13 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
             try:
                 scraper_response = await asyncio.wait_for(
                     call_scraper(query),
-                    timeout=12.0
+                    timeout=SCRAPER_TIMEOUT
                 )
                 scraper_time = time.time() - scraper_start
                 print(f"[api] Step 1: Scraper completed in {scraper_time:.2f}s (trace: {trace_id})")
                 
             except asyncio.TimeoutError:
-                error_msg = "Scraper timeout (12s)"
+                error_msg = f"Scraper timeout ({SCRAPER_TIMEOUT}s)"
                 print(f"[api] ERROR: {error_msg} (trace: {trace_id})")
                 return JSONResponse(
                     content={
@@ -384,7 +390,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                 try:
                     ef_status, ef_body = await asyncio.wait_for(
                         post_to_edge_function(normalized_data.dict()),
-                        timeout=8.0
+                        timeout=EF_TIMEOUT
                     )
                     ef_time = time.time() - ef_start
                     
@@ -396,7 +402,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                     external_ok = ef_status == 200
                     
                 except asyncio.TimeoutError:
-                    print(f"[api] WARNING: Edge Function timeout (8s) - continuing with partial results (trace: {trace_id})")
+                    print(f"[api] WARNING: Edge Function timeout ({EF_TIMEOUT}s) - continuing with partial results (trace: {trace_id})")
                     ef_status = 408
                     ef_body = "timeout"
                     external_ok = False
@@ -433,7 +439,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
             )
             
         except asyncio.TimeoutError:
-            error_msg = "Global request timeout (25s)"
+            error_msg = f"Global request timeout ({GLOBAL_TIMEOUT}s)"
             print(f"[api] ERROR: {error_msg} (trace: {trace_id})")
             return JSONResponse(
                 content={
