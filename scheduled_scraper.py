@@ -36,6 +36,8 @@ REQUEST_TIMEOUT_SECS = float(os.getenv("REQUEST_TIMEOUT_SECS", "60"))
 HARDCODED_QUERIES = [
     "Pikachu Base Set 1st Edition PSA 10",
     "Charizard Base Set Unlimited Holo PSA 8",
+    "Blastoise Base Set Unlimited Holo PSA 9",
+    "Venusaur Base Set Unlimited Holo PSA 7",
 ]
 
 def now_iso():
@@ -44,30 +46,47 @@ def now_iso():
 async def fetch_tracked_queries():
     """Fetch active tracked queries from Supabase REST if credentials provided; otherwise use fallback hardcoded list."""
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        print("[cron] No Supabase credentials - using hardcoded queries")
         return [{"query": q} for q in HARDCODED_QUERIES]
 
-    endpoint = (
-        f"{SUPABASE_URL}/rest/v1/tracked_queries"
-        f"?select=*&is_active=eq.true"
-        f"&order=last_scraped_at.nullsfirst().order=created_at.asc"
-        f"&limit={BATCH_LIMIT}"
-    )
-    headers = {
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-        "Accept": "application/json",
-    }
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECS) as client:
-        r = await client.get(endpoint, headers=headers)
-        r.raise_for_status()
-        return r.json()
+    try:
+        # Try a simpler query first to test connection
+        endpoint = f"{SUPABASE_URL}/rest/v1/tracked_queries?select=query&limit={BATCH_LIMIT}"
+        headers = {
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+            "Accept": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECS) as client:
+            r = await client.get(endpoint, headers=headers)
+            if r.status_code == 404:
+                print("[cron] tracked_queries table not found - using hardcoded queries")
+                return [{"query": q} for q in HARDCODED_QUERIES]
+            r.raise_for_status()
+            queries = r.json()
+            if queries:
+                print(f"[cron] Found {len(queries)} queries from database")
+                return queries
+            else:
+                print("[cron] No queries in database - using hardcoded queries")
+                return [{"query": q} for q in HARDCODED_QUERIES]
+    except Exception as e:
+        print(f"[cron] Database query failed: {e} - using hardcoded queries")
+        return [{"query": q} for q in HARDCODED_QUERIES]
 
 async def scrape(query: str):
     """Call the external scraper: /scrape?query=..."""
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECS) as client:
-        r = await client.get(f"{SCRAPER_BASE_URL}/scrape", params={"query": query})
-        r.raise_for_status()
-        return r.json()  # expected: { query, prices[], average, timestamp, items?[] }
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECS) as client:
+            r = await client.get(f"{SCRAPER_BASE_URL}/scrape", params={"query": query})
+            r.raise_for_status()
+            return r.json()  # expected: { query, prices[], average, timestamp, items?[] }
+    except httpx.HTTPStatusError as e:
+        print(f"[cron] Scraper HTTP error for '{query}': {e.response.status_code}")
+        return {"query": query, "error": f"HTTP {e.response.status_code}", "prices": [], "average": 0}
+    except Exception as e:
+        print(f"[cron] Scraper error for '{query}': {e}")
+        return {"query": query, "error": str(e), "prices": [], "average": 0}
 
 async def post_to_edge_function(payload: dict):
     """Post payload to the Supabase Edge Function (server-side) for storage."""
