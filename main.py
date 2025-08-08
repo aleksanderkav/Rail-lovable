@@ -3,6 +3,7 @@ import json
 import time
 import httpx
 import uuid
+import asyncio
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +14,16 @@ from typing import List, Optional, Dict, Any
 # Import the existing scraper functions
 from scheduled_scraper import (
     SCRAPER_BASE_URL, SUPABASE_FUNCTION_URL, SUPABASE_FUNCTION_TOKEN,
-    REQUEST_TIMEOUT_SECS, now_iso
+    now_iso
+)
+
+# Global HTTP client with strict timeouts
+http_client = httpx.AsyncClient(
+    timeout=httpx.Timeout(
+        connect=5.0,
+        read=12.0,
+        write=12.0
+    )
 )
 
 app = FastAPI(title="Rail-lovable Scraper", version="1.0.0")
@@ -26,6 +36,17 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=False,
 )
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize HTTP client on startup"""
+    print(f"[api] Starting up with strict timeouts: connect=5s, read=12s, write=12s")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up HTTP client on shutdown"""
+    await http_client.aclose()
+    print(f"[api] Shutdown complete")
 
 class ScrapeRequest(BaseModel):
     query: str
@@ -109,10 +130,9 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
 
 async def call_scraper(query: str) -> Dict[str, Any]:
     """Call the external scraper and return raw response"""
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECS) as client:
-        response = await client.get(f"{SCRAPER_BASE_URL}/scrape", params={"query": query})
-        response.raise_for_status()
-        return response.json()
+    response = await http_client.get(f"{SCRAPER_BASE_URL}/scrape", params={"query": query})
+    response.raise_for_status()
+    return response.json()
 
 async def post_to_edge_function(payload: Dict[str, Any]) -> tuple[int, str]:
     """Post payload to Supabase Edge Function and return status and body"""
@@ -122,13 +142,36 @@ async def post_to_edge_function(payload: Dict[str, Any]) -> tuple[int, str]:
         "Accept": "application/json",
     }
     
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECS) as client:
-        response = await client.post(
-            SUPABASE_FUNCTION_URL, 
-            headers=headers, 
-            json=payload
+    response = await http_client.post(
+        SUPABASE_FUNCTION_URL, 
+        headers=headers, 
+        json=payload
+    )
+    return response.status_code, response.text
+
+async def check_scraper_reachable() -> bool:
+    """Check if scraper is reachable without running a full scrape"""
+    try:
+        # Quick health check to scraper
+        response = await asyncio.wait_for(
+            http_client.get(f"{SCRAPER_BASE_URL}/", timeout=3.0),
+            timeout=3.0
         )
-        return response.status_code, response.text
+        return response.status_code < 500
+    except Exception:
+        return False
+
+async def check_dns_resolution() -> bool:
+    """Check if we can resolve external domains"""
+    try:
+        # Try to resolve a common domain
+        await asyncio.wait_for(
+            http_client.get("https://httpbin.org/get", timeout=3.0),
+            timeout=3.0
+        )
+        return True
+    except Exception:
+        return False
 
 @app.get("/")
 async def root():
@@ -140,15 +183,75 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Detailed health check"""
+    """Detailed health check with network connectivity"""
+    dns_ok = await check_dns_resolution()
+    scraper_reachable = await check_scraper_reachable()
+    
     return {
         "ok": True,
         "time": now_iso(),
         "env": {
             "scraper": bool(SCRAPER_BASE_URL),
             "ef": bool(SUPABASE_FUNCTION_URL)
+        },
+        "net": {
+            "dns": dns_ok,
+            "scraperReachable": scraper_reachable
         }
     }
+
+@app.post("/smoketest")
+async def smoketest():
+    """Quick connectivity test with minimal scrape"""
+    trace_id = str(uuid.uuid4())[:8]
+    
+    try:
+        # Quick scrape with limit=1 and short timeout
+        response = await asyncio.wait_for(
+            http_client.get(f"{SCRAPER_BASE_URL}/scrape", params={"query": "test", "limit": 1}),
+            timeout=6.0
+        )
+        
+        if response.status_code == 200:
+            return JSONResponse(
+                content={
+                    "ok": True,
+                    "message": "Scraper connectivity test passed",
+                    "trace": trace_id
+                },
+                headers={"X-Trace-Id": trace_id}
+            )
+        else:
+            return JSONResponse(
+                content={
+                    "ok": False,
+                    "error": f"Scraper returned status {response.status_code}",
+                    "trace": trace_id
+                },
+                status_code=502,
+                headers={"X-Trace-Id": trace_id}
+            )
+            
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            content={
+                "ok": False,
+                "error": "Scraper timeout (6s)",
+                "trace": trace_id
+            },
+            status_code=502,
+            headers={"X-Trace-Id": trace_id}
+        )
+    except Exception as e:
+        return JSONResponse(
+            content={
+                "ok": False,
+                "error": f"Scraper error: {str(e)}",
+                "trace": trace_id
+            },
+            status_code=502,
+            headers={"X-Trace-Id": trace_id}
+        )
 
 @app.options("/scrape-now")
 async def scrape_now_options():
@@ -196,104 +299,157 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
     # Log the incoming request
     print(f"[api] {now_iso()} Manual scrape request from {client_ip}: '{query}' (trace: {trace_id})")
     
-    try:
-        # Step 1: Call scraper
-        print(f"[api] Calling scraper: {SCRAPER_BASE_URL}/scrape?query={query}")
-        scraper_start = time.time()
-        
-        scraper_response = await call_scraper(query)
-        scraper_time = time.time() - scraper_start
-        
-        print(f"[api] Scraper completed in {scraper_time:.2f}s (status: 200) (trace: {trace_id})")
-        
-        # Step 2: Normalize response
-        normalized_data = normalize_scraper_response(scraper_response)
-        
-        # Log item count and field presence rates
-        item_count = len(normalized_data.items)
-        ended_at_count = sum(1 for item in normalized_data.items if item.ended_at)
-        url_count = sum(1 for item in normalized_data.items if item.url)
-        sold_count = sum(1 for item in normalized_data.items if item.sold is True)
-        
-        print(f"[api] Normalized {item_count} items:")
-        print(f"[api]   - ended_at: {ended_at_count}/{item_count} ({ended_at_count/item_count*100:.1f}%)")
-        print(f"[api]   - url: {url_count}/{item_count} ({url_count/item_count*100:.1f}%)")
-        print(f"[api]   - sold: {sold_count}/{item_count} ({sold_count/item_count*100:.1f}%)")
-        
-        # Log first 1-2 item titles
-        item_titles = [item.title for item in normalized_data.items[:2]]
-        print(f"[api] First titles: {item_titles}")
-        
-        # Step 3: Post to Edge Function
-        ef_status = None
-        ef_body = ""
-        external_ok = False
-        
-        if SUPABASE_FUNCTION_URL and SUPABASE_FUNCTION_TOKEN:
+    # Global timeout for entire request (25 seconds max)
+    async with asyncio.timeout(25.0):
+        try:
+            # Step 1: Call scraper with timeout
+            print(f"[api] Step 1: Starting scraper call (trace: {trace_id})")
+            scraper_start = time.time()
+            
             try:
-                print(f"[api] Posting to Edge Function: {SUPABASE_FUNCTION_URL}")
+                scraper_response = await asyncio.wait_for(
+                    call_scraper(query),
+                    timeout=12.0
+                )
+                scraper_time = time.time() - scraper_start
+                print(f"[api] Step 1: Scraper completed in {scraper_time:.2f}s (trace: {trace_id})")
+                
+            except asyncio.TimeoutError:
+                error_msg = "Scraper timeout (12s)"
+                print(f"[api] ERROR: {error_msg} (trace: {trace_id})")
+                return JSONResponse(
+                    content={
+                        "ok": False,
+                        "step": "scraper",
+                        "error": "timeout",
+                        "trace": trace_id
+                    },
+                    status_code=502,
+                    headers={
+                        "X-Trace-Id": trace_id,
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+                        "Access-Control-Allow-Headers": "*"
+                    }
+                )
+            except Exception as e:
+                error_msg = f"Scraper error: {str(e)}"
+                print(f"[api] ERROR: {error_msg} (trace: {trace_id})")
+                return JSONResponse(
+                    content={
+                        "ok": False,
+                        "step": "scraper",
+                        "error": str(e),
+                        "trace": trace_id
+                    },
+                    status_code=502,
+                    headers={
+                        "X-Trace-Id": trace_id,
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+                        "Access-Control-Allow-Headers": "*"
+                    }
+                )
+            
+            # Step 2: Normalize response
+            print(f"[api] Step 2: Normalizing response (trace: {trace_id})")
+            normalize_start = time.time()
+            normalized_data = normalize_scraper_response(scraper_response)
+            normalize_time = time.time() - normalize_start
+            
+            # Log item count and field presence rates
+            item_count = len(normalized_data.items)
+            ended_at_count = sum(1 for item in normalized_data.items if item.ended_at)
+            url_count = sum(1 for item in normalized_data.items if item.url)
+            sold_count = sum(1 for item in normalized_data.items if item.sold is True)
+            
+            print(f"[api] Step 2: Normalized {item_count} items in {normalize_time:.2f}s (trace: {trace_id})")
+            print(f"[api]   - ended_at: {ended_at_count}/{item_count} ({ended_at_count/item_count*100:.1f}%)")
+            print(f"[api]   - url: {url_count}/{item_count} ({url_count/item_count*100:.1f}%)")
+            print(f"[api]   - sold: {sold_count}/{item_count} ({sold_count/item_count*100:.1f}%)")
+            
+            # Log first 1-2 item titles
+            item_titles = [item.title for item in normalized_data.items[:2]]
+            print(f"[api] First titles: {item_titles}")
+            
+            # Step 3: Post to Edge Function (optional - don't fail if this times out)
+            ef_status = None
+            ef_body = ""
+            external_ok = False
+            
+            if SUPABASE_FUNCTION_URL and SUPABASE_FUNCTION_TOKEN:
+                print(f"[api] Step 3: Starting Edge Function call (trace: {trace_id})")
                 ef_start = time.time()
                 
-                ef_status, ef_body = await post_to_edge_function(normalized_data.dict())
-                ef_time = time.time() - ef_start
-                
-                # Truncate body for logging (max 300 chars)
-                ef_body_truncated = ef_body[:300] + "..." if len(ef_body) > 300 else ef_body
-                print(f"[api] Edge Function completed in {ef_time:.2f}s (status: {ef_status}) (trace: {trace_id})")
-                print(f"[api] Edge Function response: {ef_body_truncated}")
-                
-                external_ok = ef_status == 200
-                
-            except Exception as e:
-                print(f"[api] Edge Function failed: {e} (trace: {trace_id})")
-                ef_status = 500
-                ef_body = str(e)
+                try:
+                    ef_status, ef_body = await asyncio.wait_for(
+                        post_to_edge_function(normalized_data.dict()),
+                        timeout=8.0
+                    )
+                    ef_time = time.time() - ef_start
+                    
+                    # Truncate body for logging (max 300 chars)
+                    ef_body_truncated = ef_body[:300] + "..." if len(ef_body) > 300 else ef_body
+                    print(f"[api] Step 3: Edge Function completed in {ef_time:.2f}s (status: {ef_status}) (trace: {trace_id})")
+                    print(f"[api] Edge Function response: {ef_body_truncated}")
+                    
+                    external_ok = ef_status == 200
+                    
+                except asyncio.TimeoutError:
+                    print(f"[api] WARNING: Edge Function timeout (8s) - continuing with partial results (trace: {trace_id})")
+                    ef_status = 408
+                    ef_body = "timeout"
+                    external_ok = False
+                except Exception as e:
+                    print(f"[api] WARNING: Edge Function failed: {e} - continuing with partial results (trace: {trace_id})")
+                    ef_status = 500
+                    ef_body = str(e)
+                    external_ok = False
+            else:
+                print(f"[api] Step 3: Edge Function not configured - skipping (trace: {trace_id})")
+                ef_status = None
+                ef_body = "Edge Function not configured"
                 external_ok = False
-        else:
-            print(f"[api] Edge Function not configured - skipping storage (trace: {trace_id})")
-            ef_status = None
-            ef_body = "Edge Function not configured"
-            external_ok = False
-        
-        # Prepare response
-        response = {
-            "ok": True,
-            "items": [item.dict() for item in normalized_data.items],
-            "externalOk": external_ok,
-            "efStatus": ef_status,
-            "efBody": ef_body
-        }
-        
-        print(f"[api] Request completed successfully: {query} (client: {client_ip}, trace: {trace_id})")
-        return JSONResponse(
-            content=response,
-            headers={"X-Trace-Id": trace_id}
-        )
-        
-    except httpx.HTTPStatusError as e:
-        error_msg = f"Scraper HTTP error: {e.response.status_code}"
-        print(f"[api] ERROR: {error_msg} (client: {client_ip}, trace: {trace_id})")
-        raise HTTPException(
-            status_code=502, 
-            detail={
-                "ok": False,
-                "error": error_msg,
-                "step": "scraper"
-            },
-            headers={"X-Trace-Id": trace_id}
-        )
-    except Exception as e:
-        error_msg = f"Scraping failed: {str(e)}"
-        print(f"[api] ERROR: {error_msg} (client: {client_ip}, trace: {trace_id})")
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "ok": False,
-                "error": error_msg,
-                "step": "scraper"
-            },
-            headers={"X-Trace-Id": trace_id}
-        )
+            
+            # Prepare response
+            total_time = time.time() - scraper_start
+            response = {
+                "ok": True,
+                "items": [item.dict() for item in normalized_data.items],
+                "externalOk": external_ok,
+                "efStatus": ef_status,
+                "efBody": ef_body
+            }
+            
+            print(f"[api] Request completed successfully in {total_time:.2f}s: {query} (client: {client_ip}, trace: {trace_id})")
+            return JSONResponse(
+                content=response,
+                headers={
+                    "X-Trace-Id": trace_id,
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+                    "Access-Control-Allow-Headers": "*"
+                }
+            )
+            
+        except asyncio.TimeoutError:
+            error_msg = "Global request timeout (25s)"
+            print(f"[api] ERROR: {error_msg} (trace: {trace_id})")
+            return JSONResponse(
+                content={
+                    "ok": False,
+                    "step": "global",
+                    "error": "timeout",
+                    "trace": trace_id
+                },
+                status_code=502,
+                headers={
+                    "X-Trace-Id": trace_id,
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+                    "Access-Control-Allow-Headers": "*"
+                }
+            )
 
 @app.post("/scrape-now/")
 async def scrape_now_trailing(request: ScrapeRequest, http_request: Request):
