@@ -38,6 +38,7 @@ class Item(BaseModel):
     currency: Optional[str] = None
     ended_at: Optional[str] = None
     source: str = "ebay"
+    sold: Optional[bool] = None
 
 class NormalizedResponse(BaseModel):
     items: List[Item]
@@ -51,6 +52,16 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
         # Already has items array
         for item in scraper_data["items"]:
             if isinstance(item, dict):
+                # Determine if item is sold based on various indicators
+                sold = None
+                if "sold" in item:
+                    sold = bool(item["sold"])
+                elif "status" in item:
+                    status = str(item["status"]).lower()
+                    sold = any(keyword in status for keyword in ["sold", "completed", "ended"])
+                elif "ended_at" in item and item["ended_at"]:
+                    sold = True  # If it has an end date, it's likely sold/ended
+                
                 items.append(Item(
                     title=item.get("title", ""),
                     url=item.get("url"),
@@ -58,7 +69,8 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     price=item.get("price"),
                     currency=item.get("currency"),
                     ended_at=item.get("ended_at"),
-                    source=item.get("source", "ebay")
+                    source=item.get("source", "ebay"),
+                    sold=sold
                 ))
     elif "price_entries" in scraper_data and isinstance(scraper_data["price_entries"], list):
         # Convert price entries to items
@@ -68,7 +80,8 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     title=scraper_data.get("query", ""),
                     price=entry.get("price"),
                     currency="USD",
-                    source="ebay"
+                    source="ebay",
+                    sold=None  # Price entries don't typically indicate sold status
                 ))
     elif "prices" in scraper_data and isinstance(scraper_data["prices"], list):
         # Convert prices array to items
@@ -78,7 +91,8 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     title=scraper_data.get("query", ""),
                     price=float(price),
                     currency="USD",
-                    source="ebay"
+                    source="ebay",
+                    sold=None  # Price arrays don't typically indicate sold status
                 ))
     
     # If no items found, create a default item with query info
@@ -87,7 +101,8 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
             title=scraper_data.get("query", ""),
             price=scraper_data.get("average"),
             currency="USD",
-            source="ebay"
+            source="ebay",
+            sold=None
         ))
     
     return NormalizedResponse(items=items)
@@ -194,9 +209,20 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
         # Step 2: Normalize response
         normalized_data = normalize_scraper_response(scraper_response)
         
+        # Log item count and field presence rates
+        item_count = len(normalized_data.items)
+        ended_at_count = sum(1 for item in normalized_data.items if item.ended_at)
+        url_count = sum(1 for item in normalized_data.items if item.url)
+        sold_count = sum(1 for item in normalized_data.items if item.sold is True)
+        
+        print(f"[api] Normalized {item_count} items:")
+        print(f"[api]   - ended_at: {ended_at_count}/{item_count} ({ended_at_count/item_count*100:.1f}%)")
+        print(f"[api]   - url: {url_count}/{item_count} ({url_count/item_count*100:.1f}%)")
+        print(f"[api]   - sold: {sold_count}/{item_count} ({sold_count/item_count*100:.1f}%)")
+        
         # Log first 1-2 item titles
         item_titles = [item.title for item in normalized_data.items[:2]]
-        print(f"[api] Normalized {len(normalized_data.items)} items. First titles: {item_titles}")
+        print(f"[api] First titles: {item_titles}")
         
         # Step 3: Post to Edge Function
         ef_status = None
