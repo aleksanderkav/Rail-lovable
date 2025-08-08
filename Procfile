@@ -1,1 +1,1 @@
-worker: python scheduled_scraper.py 
+web: python main.py 

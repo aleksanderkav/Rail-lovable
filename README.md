@@ -1,9 +1,10 @@
-# Rail-lovable (Scheduler)
+# Rail-lovable (Scheduler + API)
 
-Lightweight Railway worker that:
-1) Fetches tracked queries from Supabase (optional), or uses a hardcoded list.
-2) Calls your external scraper at `$SCRAPER_BASE_URL/scrape?query=...`
-3) Posts the payload to your Supabase Edge Function (`$SUPABASE_FUNCTION_URL`) for storage.
+Lightweight Railway service that provides:
+1) **Scheduled scraping**: Fetches tracked queries from Supabase and runs them on a cron schedule
+2) **On-demand scraping API**: FastAPI endpoint for immediate scraping requests from Lovable
+3) **External scraper integration**: Calls your scraper at `$SCRAPER_BASE_URL/scrape?query=...`
+4) **Supabase storage**: Posts results to your Supabase Edge Function for storage
 
 ## Env vars (set in Railway)
 **Required:**
@@ -23,17 +24,55 @@ Lightweight Railway worker that:
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env  # then edit values
-python scheduled_scraper.py
+
+# Start the FastAPI server
+python main.py
+
+# Or run the cron scraper directly
+python cron_scraper.py
 ```
 
 ## Deploy on Railway
 1. Create a new Service → Python → connect this GitHub repo.
 2. Set Variables from .env.example (never commit secrets).
-3. The service will automatically start with the worker command defined in `railway.json` and `Procfile`.
-4. Create a Cron Job:
-   - Command: `python scheduled_scraper.py`
+3. The service will automatically start the FastAPI server on the configured port.
+4. Create a Cron Job for scheduled scraping:
+   - Command: `python cron_scraper.py`
    - Schedule: `*/30 * * * *` (every 30 minutes) or `0 * * * *` (hourly)
-5. Run the job manually once to test and check logs.
+5. Test the API endpoints and cron job manually.
+
+## API Endpoints
+
+### POST /scrape-now
+On-demand scraping endpoint for Lovable integration.
+
+**Request:**
+```json
+{
+  "query": "Pikachu Base Set 1st Edition PSA 10"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "query": "Pikachu Base Set 1st Edition PSA 10",
+  "scrape_data": { /* full scrape results */ },
+  "storage_result": { /* storage status */ },
+  "timing": {
+    "scrape_time_seconds": 5.23,
+    "total_time_seconds": 6.45
+  },
+  "timestamp": "2025-08-08T16:30:00.000000Z"
+}
+```
+
+### GET /
+Health check endpoint.
+
+### GET /health
+Detailed health check with configuration status.
 
 ## Notes
 - If you don't want DB lookups yet, use HARDCODED_QUERIES in scheduled_scraper.py.
