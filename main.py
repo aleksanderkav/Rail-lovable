@@ -2,6 +2,7 @@ import os
 import json
 import time
 import httpx
+import uuid
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -127,30 +128,38 @@ async def health_check():
     """Detailed health check"""
     return {
         "ok": True,
-        "time": now_iso()
+        "time": now_iso(),
+        "env": {
+            "scraper": bool(SCRAPER_BASE_URL),
+            "ef": bool(SUPABASE_FUNCTION_URL)
+        }
     }
 
 @app.options("/scrape-now")
 async def scrape_now_options():
     """CORS preflight handler for /scrape-now"""
+    trace_id = str(uuid.uuid4())[:8]
     return JSONResponse(
         content={},
         headers={
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
             "Access-Control-Allow-Headers": "*",
+            "X-Trace-Id": trace_id
         }
     )
 
 @app.options("/scrape-now/")
 async def scrape_now_options_trailing():
     """CORS preflight handler for /scrape-now/ (with trailing slash)"""
+    trace_id = str(uuid.uuid4())[:8]
     return JSONResponse(
         content={},
         headers={
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
             "Access-Control-Allow-Headers": "*",
+            "X-Trace-Id": trace_id
         }
     )
 
@@ -165,11 +174,12 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     
-    # Get client IP
+    # Get client IP and generate trace ID
     client_ip = http_request.client.host if http_request.client else "unknown"
+    trace_id = str(uuid.uuid4())[:8]
     
     # Log the incoming request
-    print(f"[api] {now_iso()} Manual scrape request from {client_ip}: '{query}'")
+    print(f"[api] {now_iso()} Manual scrape request from {client_ip}: '{query}' (trace: {trace_id})")
     
     try:
         # Step 1: Call scraper
@@ -179,7 +189,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
         scraper_response = await call_scraper(query)
         scraper_time = time.time() - scraper_start
         
-        print(f"[api] Scraper completed in {scraper_time:.2f}s (status: 200)")
+        print(f"[api] Scraper completed in {scraper_time:.2f}s (status: 200) (trace: {trace_id})")
         
         # Step 2: Normalize response
         normalized_data = normalize_scraper_response(scraper_response)
@@ -203,18 +213,18 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                 
                 # Truncate body for logging (max 300 chars)
                 ef_body_truncated = ef_body[:300] + "..." if len(ef_body) > 300 else ef_body
-                print(f"[api] Edge Function completed in {ef_time:.2f}s (status: {ef_status})")
+                print(f"[api] Edge Function completed in {ef_time:.2f}s (status: {ef_status}) (trace: {trace_id})")
                 print(f"[api] Edge Function response: {ef_body_truncated}")
                 
                 external_ok = ef_status == 200
                 
             except Exception as e:
-                print(f"[api] Edge Function failed: {e}")
+                print(f"[api] Edge Function failed: {e} (trace: {trace_id})")
                 ef_status = 500
                 ef_body = str(e)
                 external_ok = False
         else:
-            print(f"[api] Edge Function not configured - skipping storage")
+            print(f"[api] Edge Function not configured - skipping storage (trace: {trace_id})")
             ef_status = None
             ef_body = "Edge Function not configured"
             external_ok = False
@@ -228,30 +238,35 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
             "efBody": ef_body
         }
         
-        print(f"[api] Request completed successfully: {query} (client: {client_ip})")
-        return response
+        print(f"[api] Request completed successfully: {query} (client: {client_ip}, trace: {trace_id})")
+        return JSONResponse(
+            content=response,
+            headers={"X-Trace-Id": trace_id}
+        )
         
     except httpx.HTTPStatusError as e:
         error_msg = f"Scraper HTTP error: {e.response.status_code}"
-        print(f"[api] ERROR: {error_msg} (client: {client_ip})")
+        print(f"[api] ERROR: {error_msg} (client: {client_ip}, trace: {trace_id})")
         raise HTTPException(
             status_code=502, 
             detail={
                 "ok": False,
                 "error": error_msg,
                 "step": "scraper"
-            }
+            },
+            headers={"X-Trace-Id": trace_id}
         )
     except Exception as e:
         error_msg = f"Scraping failed: {str(e)}"
-        print(f"[api] ERROR: {error_msg} (client: {client_ip})")
+        print(f"[api] ERROR: {error_msg} (client: {client_ip}, trace: {trace_id})")
         raise HTTPException(
             status_code=502,
             detail={
                 "ok": False,
                 "error": error_msg,
                 "step": "scraper"
-            }
+            },
+            headers={"X-Trace-Id": trace_id}
         )
 
 @app.post("/scrape-now/")
@@ -264,15 +279,16 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     
     print(f"[api] Starting FastAPI server on port {port}")
-    print(f"[api] Scraper base URL: {SCRAPER_BASE_URL}")
-    print(f"[api] Supabase Function URL configured: {SUPABASE_FUNCTION_URL is not None}")
+    print(f"[api] Scraper base URL: {'SET' if SCRAPER_BASE_URL else 'NOT SET'}")
+    print(f"[api] Supabase Function URL: {'SET' if SUPABASE_FUNCTION_URL else 'NOT SET'}")
     
     # Print deployment info
     railway_url = os.getenv("RAILWAY_PUBLIC_DOMAIN")
     if railway_url:
-        print(f"[api] Deployed at: https://{railway_url}")
-        print(f"[api] Scrape endpoint: https://{railway_url}/scrape-now")
-        print(f"[api] Health endpoint: https://{railway_url}/health")
+        base_url = f"https://{railway_url}"
+        print(f"[api] Base URL: {base_url}")
+        print(f"[api] Scrape endpoint: {base_url}/scrape-now")
+        print(f"[api] Health endpoint: {base_url}/health")
     else:
         print(f"[api] Local development - no Railway URL available")
         print(f"[api] Local endpoints:")
