@@ -5,6 +5,7 @@ import httpx
 import uuid
 import asyncio
 from datetime import datetime, timezone
+from dataclasses import asdict, is_dataclass
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -17,8 +18,40 @@ from scheduled_scraper import (
     now_iso
 )
 
-# Import the normalizer
-from normalizer import normalizer, NormalizedItem, ParsedHints
+# Safe normalizer import with fallback
+try:
+    from normalizer import normalizer, NormalizedItem, ParsedHints
+except Exception as e:
+    normalizer = None
+    ParsedHints = None
+    NormalizedItem = None
+    print("[api] normalizer import failed:", e)
+
+# Fallback parse_title function
+def safe_parse_title(t: str):
+    if normalizer and hasattr(normalizer, "parse_title"):
+        return normalizer.parse_title(t)
+    # fallback: minimal hints
+    class F: 
+        pass
+    f = F()
+    f.franchise = None
+    f.set_name = None
+    f.edition = None
+    f.number = None
+    f.year = None
+    f.language = None
+    f.grading_company = None
+    f.grade = None
+    f.is_holo = None
+    f.rarity = None
+    f.tags = None
+    f.sold = None
+    f.set = None
+    f.grader = None
+    f.grade_value = None
+    f.canonical_key = None
+    return f
 
 # Timeout constants
 SCRAPER_TIMEOUT = 12.0
@@ -151,7 +184,7 @@ class Item(BaseModel):
     grade_value: Optional[int] = None
     
     # Parsed hints subobject
-    parsed: Optional[ParsedHints] = None
+    parsed: Optional[Dict[str, Any]] = None
 
 class NormalizedResponse(BaseModel):
     items: List[Item]
@@ -177,7 +210,7 @@ class NormalizedTestItem(BaseModel):
     ended_at: Optional[str] = None
     id: Optional[str] = None
     source: str = "ebay"
-    parsed: ParsedHints
+    parsed: Optional[Dict[str, Any]] = None
     canonical_key: str
     confidence: Dict[str, float]
 
@@ -218,7 +251,7 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                 
                 # Parse title for hints
                 title = item.get("title", "")
-                parsed_hints = normalizer.parse_title(title) if title else None
+                parsed_hints = safe_parse_title(title) if title else None
                 
                 # Calculate total price
                 price = item.get("price")
@@ -279,14 +312,14 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     grade_value=item.get("grade_value"),
                     
                     # Parsed hints subobject
-                    parsed=parsed_hints
+                    parsed=asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
                 ))
     elif "price_entries" in scraper_data and isinstance(scraper_data["price_entries"], list):
         # Convert price entries to items
         for entry in scraper_data["price_entries"]:
             if isinstance(entry, dict):
                 title = scraper_data.get("query", "")
-                parsed_hints = normalizer.parse_title(title) if title else None
+                parsed_hints = safe_parse_title(title) if title else None
                 
                 items.append(Item(
                     # Raw listing details (for AI extraction)
@@ -338,14 +371,14 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     grade_value=None,
                     
                     # Parsed hints subobject
-                    parsed=parsed_hints
+                    parsed=asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
                 ))
     elif "prices" in scraper_data and isinstance(scraper_data["prices"], list):
         # Convert prices array to items
         for price in scraper_data["prices"]:
             if isinstance(price, (int, float)):
                 title = scraper_data.get("query", "")
-                parsed_hints = normalizer.parse_title(title) if title else None
+                parsed_hints = safe_parse_title(title) if title else None
                 
                 items.append(Item(
                     # Raw listing details (for AI extraction)
@@ -397,13 +430,13 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     grade_value=None,
                     
                     # Parsed hints subobject
-                    parsed=parsed_hints
+                    parsed=asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
                 ))
     
     # If no items found, create a default item with query info
     if not items:
         title = scraper_data.get("query", "")
-        parsed_hints = normalizer.parse_title(title) if title else None
+        parsed_hints = safe_parse_title(title) if title else None
         
         items.append(Item(
             # Raw listing details (for AI extraction)
@@ -455,7 +488,7 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
             grade_value=None,
             
             # Parsed hints subobject
-            parsed=parsed_hints
+            parsed=asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
         ))
     
     return NormalizedResponse(items=items)
@@ -835,24 +868,24 @@ async def normalize_test(request: NormalizeTestRequest, http_request: Request):
                     ended_at=normalized.ended_at,
                     id=normalized.id,
                     source=normalized.source,
-                    parsed=ParsedHints(
-                        set_name=normalized.parsed.set_name,
-                        edition=normalized.parsed.edition,
-                        number=normalized.parsed.number,
-                        year=normalized.parsed.year,
-                        grading_company=normalized.parsed.grading_company,
-                        grade=normalized.parsed.grade,
-                        is_holo=normalized.parsed.is_holo,
-                        franchise=normalized.parsed.franchise,
-                        canonical_key=normalized.canonical_key,
-                        rarity=normalized.rarity,
-                        tags=normalized.tags,
-                        sold=normalized.sold,
-                        set=normalized.set,
-                        language=normalized.language,
-                        grader=normalized.grader,
-                        grade_value=normalized.grade_value
-                    ),
+                    parsed={
+                        "set_name": normalized.parsed.set_name,
+                        "edition": normalized.parsed.edition,
+                        "number": normalized.parsed.number,
+                        "year": normalized.parsed.year,
+                        "grading_company": normalized.parsed.grading_company,
+                        "grade": normalized.parsed.grade,
+                        "is_holo": normalized.parsed.is_holo,
+                        "franchise": normalized.parsed.franchise,
+                        "canonical_key": normalized.canonical_key,
+                        "rarity": normalized.rarity,
+                        "tags": normalized.tags,
+                        "sold": normalized.sold,
+                        "set": normalized.set,
+                        "language": normalized.language,
+                        "grader": normalized.grader,
+                        "grade_value": normalized.grade_value
+                    },
                     canonical_key=normalized.canonical_key,
                     confidence=normalized.confidence
                 ))
@@ -890,24 +923,24 @@ async def normalize_test(request: NormalizeTestRequest, http_request: Request):
                         ended_at=normalized.ended_at,
                         id=normalized.id,
                         source=normalized.source,
-                        parsed=ParsedHints(
-                            set_name=normalized.parsed.set_name,
-                            edition=normalized.parsed.edition,
-                            number=normalized.parsed.number,
-                            year=normalized.parsed.year,
-                            grading_company=normalized.parsed.grading_company,
-                            grade=normalized.parsed.grade,
-                            is_holo=normalized.parsed.is_holo,
-                            franchise=normalized.parsed.franchise,
-                            canonical_key=normalized.canonical_key,
-                            rarity=normalized.rarity,
-                            tags=normalized.tags,
-                            sold=normalized.sold,
-                            set=normalized.set,
-                            language=normalized.language,
-                            grader=normalized.grader,
-                            grade_value=normalized.grade_value
-                        ),
+                        parsed={
+                            "set_name": normalized.parsed.set_name,
+                            "edition": normalized.parsed.edition,
+                            "number": normalized.parsed.number,
+                            "year": normalized.parsed.year,
+                            "grading_company": normalized.parsed.grading_company,
+                            "grade": normalized.parsed.grade,
+                            "is_holo": normalized.parsed.is_holo,
+                            "franchise": normalized.parsed.franchise,
+                            "canonical_key": normalized.canonical_key,
+                            "rarity": normalized.rarity,
+                            "tags": normalized.tags,
+                            "sold": normalized.sold,
+                            "set": normalized.set,
+                            "language": normalized.language,
+                            "grader": normalized.grader,
+                            "grade_value": normalized.grade_value
+                        },
                         canonical_key=normalized.canonical_key,
                         confidence=normalized.confidence
                     ))
