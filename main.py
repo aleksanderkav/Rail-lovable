@@ -521,21 +521,29 @@ async def post_to_edge_function(payload: Dict[str, Any]) -> tuple[int, str]:
     # Use service role key for server-to-server authentication
     auth_header = f"Bearer {SUPABASE_SERVICE_ROLE_KEY}" if SUPABASE_SERVICE_ROLE_KEY else ""
     
+    # Build the correct Edge Function URL
+    supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    ef_url = f"{supabase_url}/functions/v1/ai-parser"
+    
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
     
-    # Only add Authorization header if we have a service role key
+    # Add Authorization header if we have a service role key
     if auth_header:
         headers["Authorization"] = auth_header
     
+    # Add function secret header
+    function_secret = "f3a72c7d-6b59-4d2b-b0e8-9a83f07a54e2"
+    headers["x-function-secret"] = function_secret
+    
     print(f"[api] Calling Edge Function with auth: {'Bearer ***' if SUPABASE_SERVICE_ROLE_KEY else 'None'}")
-    print(f"[api] Edge Function URL: {SUPABASE_FUNCTION_URL}")
+    print(f"[api] Edge Function URL: {ef_url}")
     print(f"[api] Request headers: {dict(headers)}")
     
     response = await http_client.post(
-        SUPABASE_FUNCTION_URL, 
+        ef_url, 
         headers=headers, 
         json=payload
     )
@@ -576,6 +584,9 @@ async def root():
 @app.get("/health")
 async def health():
     """Early health that never touches external deps"""
+    supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    ef_url = f"{supabase_url}/functions/v1/ai-parser" if supabase_url else "NOT SET"
+    
     return JSONResponse({
         "ok": True,
         "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -583,6 +594,7 @@ async def health():
             "scraper": bool(get_scraper_base()),
             "ef": bool(get_ef_url()),
             "ef_auth": bool(SUPABASE_SERVICE_ROLE_KEY),
+            "ef_url": ef_url,
         },
     })
 
