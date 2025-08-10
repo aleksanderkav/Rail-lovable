@@ -98,8 +98,7 @@ def get_ef_url():
 def startup_log():
     print("[api] Booting… PORT=", os.getenv("PORT"), " PYTHONUNBUFFERED=", os.getenv("PYTHONUNBUFFERED"))
 
-# Call it during startup instead of import
-startup_log()
+# Don't call it during import - call it during startup instead
 
 @app.middleware("http")
 async def add_trace_and_log(request, call_next):
@@ -128,6 +127,7 @@ async def add_trace_and_log(request, call_next):
 async def startup_event():
     """Initialize HTTP client on startup"""
     print(f"[api] Starting up with strict timeouts: connect=5s, read={SCRAPER_TIMEOUT}s, write={SCRAPER_TIMEOUT}s")
+    startup_log()
 
 @app.on_event("shutdown")
 async def shutdown_event():
