@@ -14,7 +14,7 @@ from typing import List, Optional, Dict, Any
 
 # Import the existing scraper functions
 from scheduled_scraper import (
-    SCRAPER_BASE_URL, SUPABASE_FUNCTION_URL, SUPABASE_FUNCTION_TOKEN,
+    SCRAPER_BASE_URL, SUPABASE_FUNCTION_URL,
     now_iso
 )
 
@@ -26,6 +26,9 @@ except Exception as e:
     ParsedHints = None
     NormalizedItem = None
     print("[api] normalizer import failed:", e)
+
+# Environment variables for authentication
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 
 # Fallback parse_title function
 def safe_parse_title(t: str):
@@ -515,11 +518,19 @@ async def call_scraper(query: str) -> Dict[str, Any]:
 
 async def post_to_edge_function(payload: Dict[str, Any]) -> tuple[int, str]:
     """Post payload to Supabase Edge Function and return status and body"""
+    # Use service role key for server-to-server authentication
+    auth_header = f"Bearer {SUPABASE_SERVICE_ROLE_KEY}" if SUPABASE_SERVICE_ROLE_KEY else ""
+    
     headers = {
-        "Authorization": f"Bearer {SUPABASE_FUNCTION_TOKEN}",
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
+    
+    # Only add Authorization header if we have a service role key
+    if auth_header:
+        headers["Authorization"] = auth_header
+    
+    print(f"[api] Calling Edge Function with auth: {'Bearer ***' if SUPABASE_SERVICE_ROLE_KEY else 'None'}")
     
     response = await http_client.post(
         SUPABASE_FUNCTION_URL, 
@@ -569,6 +580,7 @@ async def health():
         "env": {
             "scraper": bool(get_scraper_base()),
             "ef": bool(get_ef_url()),
+            "ef_auth": bool(SUPABASE_SERVICE_ROLE_KEY),
         },
     })
 
@@ -754,7 +766,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
             ef_body = ""
             external_ok = False
             
-            if SUPABASE_FUNCTION_URL and SUPABASE_FUNCTION_TOKEN:
+            if SUPABASE_FUNCTION_URL and SUPABASE_SERVICE_ROLE_KEY:
                 print(f"[api] Step 3: Starting Edge Function call (trace: {trace_id})")
                 ef_start = time.time()
                 
