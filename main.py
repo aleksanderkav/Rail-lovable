@@ -98,7 +98,11 @@ def get_ef_url():
     return os.getenv("SUPABASE_FUNCTION_URL", "").strip()
 
 # Add a very loud startup print so we see logs even if something later fails
-print("[api] Booting… PORT=", os.getenv("PORT"), " PYTHONUNBUFFERED=", os.getenv("PYTHONUNBUFFERED"))
+def startup_log():
+    print("[api] Booting… PORT=", os.getenv("PORT"), " PYTHONUNBUFFERED=", os.getenv("PYTHONUNBUFFERED"))
+
+# Call it during startup instead of import
+startup_log()
 
 @app.middleware("http")
 async def add_trace_and_log(request, call_next):
