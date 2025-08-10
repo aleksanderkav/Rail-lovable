@@ -27,8 +27,9 @@ except Exception as e:
     NormalizedItem = None
     print("[api] normalizer import failed:", e)
 
-# Environment variables for authentication
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+# Environment variables for authentication - make lazy to avoid startup crashes
+def get_service_role_key():
+    return os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 
 # Fallback parse_title function
 def safe_parse_title(t: str):
@@ -519,7 +520,7 @@ async def call_scraper(query: str) -> Dict[str, Any]:
 async def post_to_edge_function(payload: Dict[str, Any]) -> tuple[int, str]:
     """Post payload to Supabase Edge Function and return status and body"""
     # Use service role key for server-to-server authentication
-    auth_header = f"Bearer {SUPABASE_SERVICE_ROLE_KEY}" if SUPABASE_SERVICE_ROLE_KEY else ""
+    auth_header = f"Bearer {get_service_role_key()}" if get_service_role_key() else ""
     
     # Build the correct Edge Function URL
     supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -538,7 +539,7 @@ async def post_to_edge_function(payload: Dict[str, Any]) -> tuple[int, str]:
     function_secret = "f3a72c7d-6b59-4d2b-b0e8-9a83f07a54e2"
     headers["x-function-secret"] = function_secret
     
-    print(f"[api] Calling Edge Function with auth: {'Bearer ***' if SUPABASE_SERVICE_ROLE_KEY else 'None'}")
+    print(f"[api] Calling Edge Function with auth: {'Bearer ***' if get_service_role_key() else 'None'}")
     print(f"[api] Edge Function URL: {ef_url}")
     print(f"[api] Request headers: {dict(headers)}")
     
@@ -596,7 +597,7 @@ async def health():
         "env": {
             "scraper": bool(get_scraper_base()),
             "ef": bool(get_ef_url()),
-            "ef_auth": bool(SUPABASE_SERVICE_ROLE_KEY),
+            "ef_auth": bool(get_service_role_key()),
             "ef_url": ef_url,
         },
     })
@@ -783,7 +784,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
             ef_body = ""
             external_ok = False
             
-            if SUPABASE_FUNCTION_URL and SUPABASE_SERVICE_ROLE_KEY:
+            if SUPABASE_FUNCTION_URL and get_service_role_key():
                 print(f"[api] Step 3: Starting Edge Function call (trace: {trace_id})")
                 ef_start = time.time()
                 
