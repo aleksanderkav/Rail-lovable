@@ -11,17 +11,35 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 import json
 
-# Configuration
-SCRAPER_BASE_URL = os.getenv("SCRAPER_BASE_URL")
-SUPABASE_FUNCTION_URL = os.getenv("SUPABASE_FUNCTION_URL")
-SUPABASE_FUNCTION_TOKEN = os.getenv("SUPABASE_FUNCTION_TOKEN")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+# Environment variables - make lazy to avoid startup crashes
+def get_scraper_base_url():
+    return os.getenv("SCRAPER_BASE_URL")
 
-# Scraping settings
-BATCH_LIMIT = int(os.getenv("BATCH_LIMIT", "20"))
-SLEEP_JITTER_SECS = float(os.getenv("SLEEP_JITTER_SECS", "2.0"))
-REQUEST_TIMEOUT_SECS = int(os.getenv("REQUEST_TIMEOUT_SECS", "60"))
+def get_supabase_function_url():
+    return os.getenv("SUPABASE_FUNCTION_URL")
+
+def get_supabase_function_token():
+    return os.getenv("SUPABASE_FUNCTION_TOKEN")
+
+def get_supabase_url():
+    return os.getenv("SUPABASE_URL")
+
+def get_supabase_service_role_key():
+    return os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+def get_batch_limit():
+    return int(os.getenv("BATCH_LIMIT", "20"))
+
+def get_sleep_jitter_secs():
+    return float(os.getenv("SLEEP_JITTER_SECS", "2.0"))
+
+def get_request_timeout_secs():
+    return int(os.getenv("REQUEST_TIMEOUT_SECS", "60"))
+
+# Scraping settings - use lazy functions
+BATCH_LIMIT = get_batch_limit()
+SLEEP_JITTER_SECS = get_sleep_jitter_secs()
+REQUEST_TIMEOUT_SECS = get_request_timeout_secs()
 
 def now_iso() -> str:
     """Get current time in ISO format"""
@@ -29,11 +47,11 @@ def now_iso() -> str:
 
 async def scrape(query: str) -> Dict[str, Any]:
     """Scrape a single query using the external scraper"""
-    if not SCRAPER_BASE_URL:
+    if not get_scraper_base_url():
         raise ValueError("SCRAPER_BASE_URL not configured")
     
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECS) as client:
-        response = await client.get(f"{SCRAPER_BASE_URL}/scrape", params={"query": query})
+        response = await client.get(f"{get_scraper_base_url()}/scrape", params={"query": query})
         response.raise_for_status()
         
         scraper_data = response.json()
@@ -242,14 +260,14 @@ async def scrape(query: str) -> Dict[str, Any]:
 
 async def post_to_edge_function(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Post scraped data to the Supabase Edge Function for AI enrichment"""
-    if not SUPABASE_FUNCTION_URL or not SUPABASE_FUNCTION_TOKEN:
+    if not get_supabase_function_url() or not get_supabase_function_token():
         raise ValueError("Edge Function not configured")
     
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECS) as client:
         response = await client.post(
-            SUPABASE_FUNCTION_URL,
+            get_supabase_function_url(),
             json=payload,
-            headers={"Authorization": f"Bearer {SUPABASE_FUNCTION_TOKEN}"}
+            headers={"Authorization": f"Bearer {get_supabase_function_token()}"}
         )
         response.raise_for_status()
         
@@ -260,7 +278,7 @@ async def post_to_edge_function(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 async def get_tracked_queries() -> List[str]:
     """Get list of queries to track from Supabase or fallback to hardcoded"""
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    if not get_supabase_url() or not get_supabase_service_role_key():
         # Fallback to hardcoded queries
         return [
             "Pikachu Base Set 1st Edition PSA 10",
@@ -298,7 +316,7 @@ async def process_query(query: str):
             payload["raw_query"] = query
         
         # Only post to Edge Function if configured
-        if SUPABASE_FUNCTION_URL and SUPABASE_FUNCTION_TOKEN:
+        if get_supabase_function_url() and get_supabase_function_token():
             result = await post_to_edge_function(payload)
             print(f"[cron] stored: {query} -> {result}")
         else:
@@ -311,9 +329,9 @@ async def main():
     """Main scraping function"""
     print(f"[cron] {now_iso()} Starting scheduled scraper")
     print(f"[cron] Configuration:")
-    print(f"   SCRAPER_BASE_URL: {'✅ Set' if SCRAPER_BASE_URL else '❌ Not set'}")
-    print(f"   SUPABASE_FUNCTION_URL: {'✅ Set' if SUPABASE_FUNCTION_URL else '❌ Not set'}")
-    print(f"   SUPABASE_FUNCTION_TOKEN: {'✅ Set' if SUPABASE_FUNCTION_TOKEN else '❌ Not set'}")
+    print(f"   SCRAPER_BASE_URL: {'✅ Set' if get_scraper_base_url() else '❌ Not set'}")
+    print(f"   SUPABASE_FUNCTION_URL: {'✅ Set' if get_supabase_function_url() else '❌ Not set'}")
+    print(f"   SUPABASE_FUNCTION_TOKEN: {'✅ Set' if get_supabase_function_token() else '❌ Not set'}")
     print(f"   BATCH_LIMIT: {BATCH_LIMIT}")
     print(f"   SLEEP_JITTER_SECS: {SLEEP_JITTER_SECS}")
     
