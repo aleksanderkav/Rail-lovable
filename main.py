@@ -18,7 +18,7 @@ from scheduled_scraper import (
 )
 
 # Import the normalizer
-from normalizer import normalizer, NormalizedItem
+from normalizer import normalizer, NormalizedItem, ParsedHints
 
 # Timeout constants
 SCRAPER_TIMEOUT = 12.0
@@ -99,27 +99,6 @@ async def shutdown_event():
 
 class ScrapeRequest(BaseModel):
     query: str
-
-class ParsedHints(BaseModel):
-    """Parsed hints from card titles"""
-    set_name: Optional[str] = None
-    edition: Optional[str] = None
-    number: Optional[str] = None
-    year: Optional[int] = None
-    grading_company: Optional[str] = None
-    grade: Optional[str] = None
-    is_holo: Optional[bool] = None
-    franchise: str = "pokemon"
-    # New canonicalized fields
-    canonical_key: Optional[str] = None
-    rarity: Optional[str] = None
-    tags: Optional[List[str]] = None
-    sold: Optional[bool] = None
-    # Normalized fields
-    set: Optional[str] = None
-    language: Optional[str] = None
-    grader: Optional[str] = None
-    grade_value: Optional[int] = None
 
 class Item(BaseModel):
     """Scraped item with AI enrichment support"""
