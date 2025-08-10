@@ -53,6 +53,16 @@ app.add_middleware(
     expose_headers=["X-Trace-Id"],
 )
 
+# --- Safe, lazy clients (don't create at import time) ---
+def get_scraper_base():
+    return os.getenv("SCRAPER_BASE_URL", "").strip()
+
+def get_ef_url():
+    return os.getenv("SUPABASE_FUNCTION_URL", "").strip()
+
+# Add a very loud startup print so we see logs even if something later fails
+print("[api] Booting… PORT=", os.getenv("PORT"), " PYTHONUNBUFFERED=", os.getenv("PYTHONUNBUFFERED"))
+
 @app.middleware("http")
 async def add_trace_and_log(request, call_next):
     """Add trace ID and log all requests with origin, route, and status"""
@@ -533,24 +543,16 @@ async def root():
     }
 
 @app.get("/health")
-async def health_check():
-    """Detailed health check with network connectivity"""
-    dns_ok = await check_dns_resolution()
-    scraper_reachable = await check_scraper_reachable()
-    
-    return {
+async def health():
+    """Early health that never touches external deps"""
+    return JSONResponse({
         "ok": True,
-        "time": now_iso(),
+        "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "env": {
-            "scraper": bool(SCRAPER_BASE_URL),
-            "ef": bool(SUPABASE_FUNCTION_URL)
+            "scraper": bool(get_scraper_base()),
+            "ef": bool(get_ef_url()),
         },
-        "net": {
-            "dns": dns_ok,
-            "scraperReachable": scraper_reachable
-        },
-        "endpoints": ["/scrape-now", "/normalize-test", "/ingest-items"]
-    }
+    })
 
 @app.post("/smoketest")
 async def smoketest():
@@ -608,9 +610,7 @@ async def smoketest():
 @app.options("/scrape-now")
 async def scrape_now_options():
     """CORS preflight handler for /scrape-now"""
-    # CORSMiddleware will add headers, but we ensure 200 with bodyless response
-    from fastapi.responses import Response
-    return Response(status_code=200)
+    return JSONResponse({"ok": True})
 
 @app.options("/scrape-now/")
 async def scrape_now_options_trailing():
