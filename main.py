@@ -584,8 +584,11 @@ async def root():
 @app.get("/health")
 async def health():
     """Early health that never touches external deps"""
-    supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
-    ef_url = f"{supabase_url}/functions/v1/ai-parser" if supabase_url else "NOT SET"
+    try:
+        supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
+        ef_url = f"{supabase_url}/functions/v1/ai-parser" if supabase_url else "NOT SET"
+    except Exception:
+        ef_url = "ERROR"
     
     return JSONResponse({
         "ok": True,
