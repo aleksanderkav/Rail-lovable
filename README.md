@@ -97,14 +97,185 @@ Detailed health check.
 ```json
 {
   "ok": true,
-  "time": "2025-08-08T16:30:00.000000Z"
+  "time": "2025-08-08T16:30:00.000000Z",
+  "env": {
+    "scraper": true,
+    "ef": true
+  },
+  "net": {
+    "dns": true,
+    "scraperReachable": true
+  },
+  "endpoints": ["/scrape-now", "/normalize-test", "/ingest-items"]
 }
+```
+
+### POST /normalize-test
+Normalize items locally without calling the Edge Function. Can either normalize provided items or scrape and normalize based on a query.
+
+**Request (with items):**
+```json
+{
+  "items": [
+    {
+      "title": "Charizard Base Set Unlimited Holo PSA 9",
+      "price": 450.00,
+      "currency": "USD",
+      "source": "ebay"
+    }
+  ]
+}
+```
+
+**Request (with query):**
+```json
+{
+  "query": "Blastoise Base Set Unlimited PSA 9",
+  "limit": 10
+}
+```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "source": "items",
+  "count": 1,
+  "items": [
+    {
+      "title": "Charizard Base Set Unlimited Holo PSA 9",
+      "price": 450.00,
+      "currency": "USD",
+      "source": "ebay",
+      "parsed": {
+        "set_name": "base set",
+        "edition": "unlimited",
+        "number": null,
+        "year": null,
+        "grading_company": "psa",
+        "grade": "9",
+        "is_holo": true,
+        "franchise": "pokemon"
+      },
+      "canonical_key": "pokemon|base_set|charizard|unlimited|unknown_number|unknown_year|psa|9",
+      "confidence": {
+        "title_parse": 0.75,
+        "overall": 0.8
+      }
+    }
+  ],
+  "trace": "abcd1234"
+}
+```
+
+### POST /ingest-items
+Forward normalized (or raw) items to the Supabase Edge Function. **Defaults to dry_run=true for safety.**
+
+**Request:**
+```json
+{
+  "raw_query": "Blastoise Base Set Unlimited PSA 9",
+  "items": [
+    {
+      "title": "Blastoise Base Set Unlimited Holo PSA 9",
+      "price": 350.00,
+      "currency": "USD",
+      "canonical_key": "pokemon|base_set|blastoise|unlimited|unknown_number|unknown_year|psa|9"
+    }
+  ],
+  "dry_run": true
+}
+```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "externalOk": true,
+  "count": 1,
+  "items": [
+    {
+      "card_id": "uuid-here",
+      "created": true,
+      "price_entry_id": "uuid-here",
+      "canonical_key": "pokemon|base_set|blastoise|unlimited|unknown_number|unknown_year|psa|9",
+      "decision": "created",
+      "confidence": 0.8
+    }
+  ],
+  "trace": "abcd1234"
+}
+```
+
+## cURL Examples
+
+### Test normalization with items
+```bash
+curl -X POST http://localhost:8000/normalize-test \
+  -H "Content-Type: application/json" \
+  -d '{
+    "items": [
+      {
+        "title": "Charizard Base Set Unlimited Holo PSA 9",
+        "price": 450.00,
+        "currency": "USD",
+        "source": "ebay"
+      }
+    ]
+  }'
+```
+
+### Test normalization with query (scrapes and normalizes)
+```bash
+curl -X POST http://localhost:8000/normalize-test \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Blastoise Base Set Unlimited PSA 9",
+    "limit": 5
+  }'
+```
+
+### Test ingestion with dry_run (safe)
+```bash
+curl -X POST http://localhost:8000/ingest-items \
+  -H "Content-Type: application/json" \
+  -d '{
+    "raw_query": "Blastoise Base Set Unlimited PSA 9",
+    "items": [
+      {
+        "title": "Blastoise Base Set Unlimited Holo PSA 9",
+        "price": 350.00,
+        "currency": "USD",
+        "canonical_key": "pokemon|base_set|blastoise|unlimited|unknown_number|unknown_year|psa|9"
+      }
+    ],
+    "dry_run": true
+  }'
+```
+
+### Test ingestion without dry_run (actually persists)
+```bash
+curl -X POST http://localhost:8000/ingest-items \
+  -H "Content-Type: application/json" \
+  -d '{
+    "raw_query": "Blastoise Base Set Unlimited PSA 9",
+    "items": [
+      {
+        "title": "Blastoise Base Set Unlimited Holo PSA 9",
+        "price": 350.00,
+        "currency": "USD",
+        "canonical_key": "pokemon|base_set|blastoise|unlimited|unknown_number|unknown_year|psa|9"
+      }
+    ],
+    "dry_run": false
+  }'
 ```
 
 ## Notes
 - If you don't want DB lookups yet, use HARDCODED_QUERIES in scheduled_scraper.py.
 - CORS doesn't apply (server-to-server).
 - If the Edge Function requires auth, pass SUPABASE_FUNCTION_TOKEN in the Authorization header.
+- **Important**: `/ingest-items` defaults to `dry_run: true` for safety. You must explicitly set `dry_run: false` to actually persist data.
 
 ## Troubleshooting
 

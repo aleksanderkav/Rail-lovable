@@ -80,13 +80,13 @@ async def scrape(query: str):
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECS) as client:
             r = await client.get(f"{SCRAPER_BASE_URL}/scrape", params={"query": query})
             r.raise_for_status()
-            return r.json()  # expected: { query, prices[], average, timestamp, items?[] }
+            return r.json()  # expected: { raw_query, prices[], average, timestamp, items?[] }
     except httpx.HTTPStatusError as e:
         print(f"[cron] Scraper HTTP error for '{query}': {e.response.status_code}")
-        return {"query": query, "error": f"HTTP {e.response.status_code}", "prices": [], "average": 0}
+        return {"raw_query": query, "error": f"HTTP {e.response.status_code}", "prices": [], "average": 0}
     except Exception as e:
         print(f"[cron] Scraper error for '{query}': {e}")
-        return {"query": query, "error": str(e), "prices": [], "average": 0}
+        return {"raw_query": query, "error": str(e), "prices": [], "average": 0}
 
 async def post_to_edge_function(payload: dict):
     """Post payload to the Supabase Edge Function (server-side) for storage."""
@@ -106,6 +106,10 @@ async def process_query(query: str):
     try:
         payload = await scrape(query)
         print(f"[cron] scraped: {query} -> {payload}")
+        
+        # Ensure payload includes raw_query for AI enrichment
+        if "raw_query" not in payload:
+            payload["raw_query"] = query
         
         # Only post to Edge Function if configured
         if SUPABASE_FUNCTION_URL and SUPABASE_FUNCTION_TOKEN:
