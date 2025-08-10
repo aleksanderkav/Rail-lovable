@@ -626,12 +626,7 @@ async def normalize_test_options():
     from fastapi.responses import Response
     return Response(status_code=200)
 
-@app.options("/ingest-items")
-async def ingest_items_options():
-    """Handle CORS preflight for /ingest-items"""
-    # CORSMiddleware will add headers, but we ensure 200 with bodyless response
-    from fastapi.responses import Response
-    return Response(status_code=200)
+# Removed duplicate endpoint - CORS is handled by CORSMiddleware
 
 @app.post("/scrape-now")
 async def scrape_now(request: ScrapeRequest, http_request: Request):
