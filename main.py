@@ -531,6 +531,8 @@ async def post_to_edge_function(payload: Dict[str, Any]) -> tuple[int, str]:
         headers["Authorization"] = auth_header
     
     print(f"[api] Calling Edge Function with auth: {'Bearer ***' if SUPABASE_SERVICE_ROLE_KEY else 'None'}")
+    print(f"[api] Edge Function URL: {SUPABASE_FUNCTION_URL}")
+    print(f"[api] Request headers: {dict(headers)}")
     
     response = await http_client.post(
         SUPABASE_FUNCTION_URL, 
