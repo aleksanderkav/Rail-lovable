@@ -16,13 +16,13 @@ from typing import List, Optional, Dict, Any
 # from scheduled_scraper import now_iso
 
 # Safe normalizer import with fallback
-try:
-    from normalizer import normalizer, NormalizedItem, ParsedHints
-except Exception as e:
-    normalizer = None
-    ParsedHints = None
-    NormalizedItem = None
-    print("[api] normalizer import failed:", e)
+# try:
+#     from normalizer import normalizer, NormalizedItem, ParsedHints
+# except Exception as e:
+#     normalizer = None
+#     ParsedHints = None
+#     NormalizedItem = None
+#     print("[api] normalizer import failed:", e)
 
 # Environment variables for authentication - make lazy to avoid startup crashes
 def get_service_role_key():
@@ -35,30 +35,30 @@ def get_supabase_url():
     return os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 
 # Fallback parse_title function
-def safe_parse_title(t: str):
-    if normalizer and hasattr(normalizer, "parse_title"):
-        return normalizer.parse_title(t)
-    # fallback: minimal hints
-    class F: 
-        pass
-    f = F()
-    f.franchise = None
-    f.set_name = None
-    f.edition = None
-    f.number = None
-    f.year = None
-    f.language = None
-    f.grading_company = None
-    f.grade = None
-    f.is_holo = None
-    f.rarity = None
-    f.tags = None
-    f.sold = None
-    f.set = None
-    f.grader = None
-    f.grade_value = None
-    f.canonical_key = None
-    return f
+# def safe_parse_title(t: str):
+#     if normalizer and hasattr(normalizer, "parse_title"):
+#         return normalizer.parse_title(t)
+#     # fallback: minimal hints
+#     class F: 
+#         pass
+#     f = F()
+#     f.franchise = None
+#     f.set_name = None
+#     f.edition = None
+#     f.number = None
+#     f.year = None
+#     f.language = None
+#     f.grading_company = None
+#     f.grade = None
+#     f.is_holo = None
+#     f.rarity = None
+#     f.tags = None
+#     f.sold = None
+#     f.set = None
+#     f.grader = None
+#     f.grade_value = None
+#     f.canonical_key = None
+#     return f
 
 # Timeout constants
 SCRAPER_TIMEOUT = 12.0
@@ -125,15 +125,11 @@ async def add_trace_and_log(request, call_next):
     try:
         resp = await call_next(request)
         # Add trace ID to response headers
-        if hasattr(resp, 'headers'):
-            resp.headers["X-Trace-Id"] = trace
-        # Log the request with status
-        status = getattr(resp, 'status_code', '—') if resp else '—'
-        print(f"[api] {method} {path} origin={origin} status={status} trace={trace}")
+        resp.headers["X-Trace-Id"] = trace
+        print(f"[api] {method} {path} -> {resp.status_code} (trace: {trace}, origin: {origin})")
         return resp
     except Exception as e:
-        # Log any errors that occur during request processing
-        print(f"[api] {method} {path} origin={origin} status=ERROR trace={trace} error={str(e)}")
+        print(f"[api] {method} {path} -> ERROR: {e} (trace: {trace}, origin: {origin})")
         raise
 
 @app.on_event("startup")
@@ -270,7 +266,7 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                 
                 # Parse title for hints
                 title = item.get("title", "")
-                parsed_hints = safe_parse_title(title) if title else None
+                # parsed_hints = safe_parse_title(title) if title else None
                 
                 # Calculate total price
                 price = item.get("price")
@@ -298,19 +294,19 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     images=[item.get("image_url")] if item.get("image_url") else None,
                     
                     # Initial parsed fields (if easily extractable during scraping)
-                    franchise=parsed_hints.franchise if parsed_hints else None,
-                    set_name=parsed_hints.set_name if parsed_hints else None,
-                    edition=parsed_hints.edition if parsed_hints else None,
-                    number=parsed_hints.number if parsed_hints else None,
-                    year=parsed_hints.year if parsed_hints else None,
-                    language=parsed_hints.language if parsed_hints else None,
-                    grading_company=parsed_hints.grading_company if parsed_hints else None,
-                    grade=parsed_hints.grade if parsed_hints else None,
-                    rarity=parsed_hints.rarity if parsed_hints else None,
-                    is_holo=parsed_hints.is_holo if parsed_hints else None,
+                    franchise=None, # parsed_hints.franchise if parsed_hints else None,
+                    set_name=None, # parsed_hints.set_name if parsed_hints else None,
+                    edition=None, # parsed_hints.edition if parsed_hints else None,
+                    number=None, # parsed_hints.number if parsed_hints else None,
+                    year=None, # parsed_hints.year if parsed_hints else None,
+                    language=None, # parsed_hints.language if parsed_hints else None,
+                    grading_company=None, # parsed_hints.grading_company if parsed_hints else None,
+                    grade=None, # parsed_hints.grade if parsed_hints else None,
+                    rarity=None, # parsed_hints.rarity if parsed_hints else None,
+                    is_holo=None, # parsed_hints.is_holo if parsed_hints else None,
                     
                     # Tags (pre-filled if certain)
-                    tags=parsed_hints.tags if parsed_hints else None,
+                    tags=None, # parsed_hints.tags if parsed_hints else None,
                     
                     # Metadata for enrichment
                     raw_query=scraper_data.get("query"),
@@ -331,14 +327,14 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     grade_value=item.get("grade_value"),
                     
                     # Parsed hints subobject
-                    parsed=asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
+                    parsed=None # asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
                 ))
     elif "price_entries" in scraper_data and isinstance(scraper_data["price_entries"], list):
         # Convert price entries to items
         for entry in scraper_data["price_entries"]:
             if isinstance(entry, dict):
                 title = scraper_data.get("query", "")
-                parsed_hints = safe_parse_title(title) if title else None
+                # parsed_hints = safe_parse_title(title) if title else None
                 
                 items.append(Item(
                     # Raw listing details (for AI extraction)
@@ -357,19 +353,19 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     images=None,
                     
                     # Initial parsed fields (if easily extractable during scraping)
-                    franchise=parsed_hints.franchise if parsed_hints else None,
-                    set_name=parsed_hints.set_name if parsed_hints else None,
-                    edition=parsed_hints.edition if parsed_hints else None,
-                    number=parsed_hints.number if parsed_hints else None,
-                    year=parsed_hints.year if parsed_hints else None,
-                    language=parsed_hints.language if parsed_hints else None,
-                    grading_company=parsed_hints.grading_company if parsed_hints else None,
-                    grade=parsed_hints.grade if parsed_hints else None,
-                    rarity=parsed_hints.rarity if parsed_hints else None,
-                    is_holo=parsed_hints.is_holo if parsed_hints else None,
+                    franchise=None, # parsed_hints.franchise if parsed_hints else None,
+                    set_name=None, # parsed_hints.set_name if parsed_hints else None,
+                    edition=None, # parsed_hints.edition if parsed_hints else None,
+                    number=None, # parsed_hints.number if parsed_hints else None,
+                    year=None, # parsed_hints.year if parsed_hints else None,
+                    language=None, # parsed_hints.language if parsed_hints else None,
+                    grading_company=None, # parsed_hints.grading_company if parsed_hints else None,
+                    grade=None, # parsed_hints.grade if parsed_hints else None,
+                    rarity=None, # parsed_hints.rarity if parsed_hints else None,
+                    is_holo=None, # parsed_hints.is_holo if parsed_hints else None,
                     
                     # Tags (pre-filled if certain)
-                    tags=parsed_hints.tags if parsed_hints else None,
+                    tags=None, # parsed_hints.tags if parsed_hints else None,
                     
                     # Metadata for enrichment
                     raw_query=scraper_data.get("query"),
@@ -390,14 +386,14 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     grade_value=None,
                     
                     # Parsed hints subobject
-                    parsed=asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
+                    parsed=None # asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
                 ))
     elif "prices" in scraper_data and isinstance(scraper_data["prices"], list):
         # Convert prices array to items
         for price in scraper_data["prices"]:
             if isinstance(price, (int, float)):
                 title = scraper_data.get("query", "")
-                parsed_hints = safe_parse_title(title) if title else None
+                # parsed_hints = safe_parse_title(title) if title else None
                 
                 items.append(Item(
                     # Raw listing details (for AI extraction)
@@ -416,19 +412,19 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     images=None,
                     
                     # Initial parsed fields (if easily extractable during scraping)
-                    franchise=parsed_hints.franchise if parsed_hints else None,
-                    set_name=parsed_hints.set_name if parsed_hints else None,
-                    edition=parsed_hints.edition if parsed_hints else None,
-                    number=parsed_hints.number if parsed_hints else None,
-                    year=parsed_hints.year if parsed_hints else None,
-                    language=parsed_hints.language if parsed_hints else None,
-                    grading_company=parsed_hints.grading_company if parsed_hints else None,
-                    grade=parsed_hints.grade if parsed_hints else None,
-                    rarity=parsed_hints.rarity if parsed_hints else None,
-                    is_holo=parsed_hints.is_holo if parsed_hints else None,
+                    franchise=None, # parsed_hints.franchise if parsed_hints else None,
+                    set_name=None, # parsed_hints.set_name if parsed_hints else None,
+                    edition=None, # parsed_hints.edition if parsed_hints else None,
+                    number=None, # parsed_hints.number if parsed_hints else None,
+                    year=None, # parsed_hints.year if parsed_hints else None,
+                    language=None, # parsed_hints.language if parsed_hints else None,
+                    grading_company=None, # parsed_hints.grading_company if parsed_hints else None,
+                    grade=None, # parsed_hints.grade if parsed_hints else None,
+                    rarity=None, # parsed_hints.rarity if parsed_hints else None,
+                    is_holo=None, # parsed_hints.is_holo if parsed_hints else None,
                     
                     # Tags (pre-filled if certain)
-                    tags=parsed_hints.tags if parsed_hints else None,
+                    tags=None, # parsed_hints.tags if parsed_hints else None,
                     
                     # Metadata for enrichment
                     raw_query=scraper_data.get("query"),
@@ -449,13 +445,13 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     grade_value=None,
                     
                     # Parsed hints subobject
-                    parsed=asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
+                    parsed=None # asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
                 ))
     
     # If no items found, create a default item with query info
     if not items:
         title = scraper_data.get("query", "")
-        parsed_hints = safe_parse_title(title) if title else None
+        # parsed_hints = safe_parse_title(title) if title else None
         
         items.append(Item(
             # Raw listing details (for AI extraction)
@@ -474,19 +470,19 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
             images=None,
             
             # Initial parsed fields (if easily extractable during scraping)
-            franchise=parsed_hints.franchise if parsed_hints else None,
-            set_name=parsed_hints.set_name if parsed_hints else None,
-            edition=parsed_hints.edition if parsed_hints else None,
-            number=parsed_hints.number if parsed_hints else None,
-            year=parsed_hints.year if parsed_hints else None,
-            language=parsed_hints.language if parsed_hints else None,
-            grading_company=parsed_hints.grading_company if parsed_hints else None,
-            grade=parsed_hints.grade if parsed_hints else None,
-            rarity=parsed_hints.rarity if parsed_hints else None,
-            is_holo=parsed_hints.is_holo if parsed_hints else None,
+            franchise=None, # parsed_hints.franchise if parsed_hints else None,
+            set_name=None, # parsed_hints.set_name if parsed_hints else None,
+            edition=None, # parsed_hints.edition if parsed_hints else None,
+            number=None, # parsed_hints.number if parsed_hints else None,
+            year=None, # parsed_hints.year if parsed_hints else None,
+            language=None, # parsed_hints.language if parsed_hints else None,
+            grading_company=None, # parsed_hints.grading_company if parsed_hints else None,
+            grade=None, # parsed_hints.grade if parsed_hints else None,
+            rarity=None, # parsed_hints.rarity if parsed_hints else None,
+            is_holo=None, # parsed_hints.is_holo if parsed_hints else None,
             
             # Tags (pre-filled if certain)
-            tags=parsed_hints.tags if parsed_hints else None,
+            tags=None, # parsed_hints.tags if parsed_hints else None,
             
             # Metadata for enrichment
             raw_query=scraper_data.get("query"),
@@ -507,7 +503,7 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
             grade_value=None,
             
             # Parsed hints subobject
-            parsed=asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
+            parsed=None # asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
         ))
     
     return NormalizedResponse(items=items)
@@ -946,35 +942,35 @@ async def normalize_test(request: NormalizeTestRequest, http_request: Request):
             # Normalize provided items
             print(f"[api] Normalizing {len(request.items)} provided items (trace: {trace_id})")
             for item in request.items:
-                normalized = normalizer.normalize_item(item)
+                # normalized = normalizer.normalize_item(item)
                 items.append(NormalizedTestItem(
-                    title=normalized.title,
-                    url=normalized.url,
-                    price=normalized.price,
-                    currency=normalized.currency,
-                    ended_at=normalized.ended_at,
-                    id=normalized.id,
-                    source=normalized.source,
+                    title=item.get("title", ""),
+                    url=item.get("url"),
+                    price=item.get("price"),
+                    currency=item.get("currency"),
+                    ended_at=item.get("ended_at"),
+                    id=item.get("id"),
+                    source=item.get("source", "ebay"),
                     parsed={
-                        "set_name": normalized.parsed.set_name,
-                        "edition": normalized.parsed.edition,
-                        "number": normalized.parsed.number,
-                        "year": normalized.parsed.year,
-                        "grading_company": normalized.parsed.grading_company,
-                        "grade": normalized.parsed.grade,
-                        "is_holo": normalized.parsed.is_holo,
-                        "franchise": normalized.parsed.franchise,
-                        "canonical_key": normalized.canonical_key,
-                        "rarity": normalized.rarity,
-                        "tags": normalized.tags,
-                        "sold": normalized.sold,
-                        "set": normalized.set,
-                        "language": normalized.language,
-                        "grader": normalized.grader,
-                        "grade_value": normalized.grade_value
+                        "set_name": item.get("normalized", {}).get("parsed", {}).get("set_name"),
+                        "edition": item.get("normalized", {}).get("parsed", {}).get("edition"),
+                        "number": item.get("normalized", {}).get("parsed", {}).get("number"),
+                        "year": item.get("normalized", {}).get("parsed", {}).get("year"),
+                        "grading_company": item.get("normalized", {}).get("parsed", {}).get("grading_company"),
+                        "grade": item.get("normalized", {}).get("parsed", {}).get("grade"),
+                        "is_holo": item.get("normalized", {}).get("parsed", {}).get("is_holo"),
+                        "franchise": item.get("normalized", {}).get("parsed", {}).get("franchise"),
+                        "canonical_key": item.get("canonical_key"),
+                        "rarity": item.get("normalized", {}).get("parsed", {}).get("rarity"),
+                        "tags": item.get("normalized", {}).get("parsed", {}).get("tags"),
+                        "sold": item.get("normalized", {}).get("parsed", {}).get("sold"),
+                        "set": item.get("normalized", {}).get("parsed", {}).get("set"),
+                        "language": item.get("normalized", {}).get("parsed", {}).get("language"),
+                        "grader": item.get("normalized", {}).get("parsed", {}).get("grader"),
+                        "grade_value": item.get("normalized", {}).get("parsed", {}).get("grade_value")
                     },
-                    canonical_key=normalized.canonical_key,
-                    confidence=normalized.confidence
+                    canonical_key=item.get("canonical_key"),
+                    confidence=item.get("normalized", {}).get("confidence", {})
                 ))
         elif request.query:
             # Call scraper and normalize results
@@ -1001,35 +997,35 @@ async def normalize_test(request: NormalizeTestRequest, http_request: Request):
             # Normalize items
             for item in raw_items:
                 if isinstance(item, dict):
-                    normalized = normalizer.normalize_item(item)
+                    # normalized = normalizer.normalize_item(item)
                     items.append(NormalizedTestItem(
-                        title=normalized.title,
-                        url=normalized.url,
-                        price=normalized.price,
-                        currency=normalized.currency,
-                        ended_at=normalized.ended_at,
-                        id=normalized.id,
-                        source=normalized.source,
+                        title=item.get("title", ""),
+                        url=item.get("url"),
+                        price=item.get("price"),
+                        currency=item.get("currency"),
+                        ended_at=item.get("ended_at"),
+                        id=item.get("id"),
+                        source=item.get("source", "ebay"),
                         parsed={
-                            "set_name": normalized.parsed.set_name,
-                            "edition": normalized.parsed.edition,
-                            "number": normalized.parsed.number,
-                            "year": normalized.parsed.year,
-                            "grading_company": normalized.parsed.grading_company,
-                            "grade": normalized.parsed.grade,
-                            "is_holo": normalized.parsed.is_holo,
-                            "franchise": normalized.parsed.franchise,
-                            "canonical_key": normalized.canonical_key,
-                            "rarity": normalized.rarity,
-                            "tags": normalized.tags,
-                            "sold": normalized.sold,
-                            "set": normalized.set,
-                            "language": normalized.language,
-                            "grader": normalized.grader,
-                            "grade_value": normalized.grade_value
+                            "set_name": item.get("normalized", {}).get("parsed", {}).get("set_name"),
+                            "edition": item.get("normalized", {}).get("parsed", {}).get("edition"),
+                            "number": item.get("normalized", {}).get("parsed", {}).get("number"),
+                            "year": item.get("normalized", {}).get("parsed", {}).get("year"),
+                            "grading_company": item.get("normalized", {}).get("parsed", {}).get("grading_company"),
+                            "grade": item.get("normalized", {}).get("parsed", {}).get("grade"),
+                            "is_holo": item.get("normalized", {}).get("parsed", {}).get("is_holo"),
+                            "franchise": item.get("normalized", {}).get("parsed", {}).get("franchise"),
+                            "canonical_key": item.get("canonical_key"),
+                            "rarity": item.get("normalized", {}).get("parsed", {}).get("rarity"),
+                            "tags": item.get("normalized", {}).get("parsed", {}).get("tags"),
+                            "sold": item.get("normalized", {}).get("parsed", {}).get("sold"),
+                            "set": item.get("normalized", {}).get("parsed", {}).get("set"),
+                            "language": item.get("normalized", {}).get("parsed", {}).get("language"),
+                            "grader": item.get("normalized", {}).get("parsed", {}).get("grader"),
+                            "grade_value": item.get("normalized", {}).get("parsed", {}).get("grade_value")
                         },
-                        canonical_key=normalized.canonical_key,
-                        confidence=normalized.confidence
+                        canonical_key=item.get("canonical_key"),
+                        confidence=item.get("normalized", {}).get("confidence", {})
                     ))
         else:
             raise HTTPException(status_code=400, detail="Either 'items' or 'query' must be provided")
@@ -1146,22 +1142,22 @@ async def ingest_items(request: IngestItemsRequest, http_request: Request):
                 ef_payload["items"].append(item)
             else:
                 # Raw item, add normalized as subobject
-                normalized = normalizer.normalize_item(item)
+                # normalized = normalizer.normalize_item(item)
                 ef_payload["items"].append({
                     **item,
                     "normalized": {
-                        "canonical_key": normalized.canonical_key,
+                        "canonical_key": item.get("canonical_key"),
                         "parsed": {
-                            "set_name": normalized.parsed.set_name,
-                            "edition": normalized.parsed.edition,
-                            "number": normalized.parsed.number,
-                            "year": normalized.parsed.year,
-                            "grading_company": normalized.parsed.grading_company,
-                            "grade": normalized.parsed.grade,
-                            "is_holo": normalized.parsed.is_holo,
-                            "franchise": normalized.parsed.franchise
+                            "set_name": item.get("normalized", {}).get("parsed", {}).get("set_name"),
+                            "edition": item.get("normalized", {}).get("parsed", {}).get("edition"),
+                            "number": item.get("normalized", {}).get("parsed", {}).get("number"),
+                            "year": item.get("normalized", {}).get("parsed", {}).get("year"),
+                            "grading_company": item.get("normalized", {}).get("parsed", {}).get("grading_company"),
+                            "grade": item.get("normalized", {}).get("parsed", {}).get("grade"),
+                            "is_holo": item.get("normalized", {}).get("parsed", {}).get("is_holo"),
+                            "franchise": item.get("normalized", {}).get("parsed", {}).get("franchise")
                         },
-                        "confidence": normalized.confidence
+                        "confidence": item.get("normalized", {}).get("confidence", {})
                     }
                 })
         
