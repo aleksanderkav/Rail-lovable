@@ -28,6 +28,12 @@ except Exception as e:
 def get_service_role_key():
     return os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 
+def get_function_secret():
+    return os.getenv("FUNCTION_SECRET", "").strip()
+
+def get_supabase_url():
+    return os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+
 # Fallback parse_title function
 def safe_parse_title(t: str):
     if normalizer and hasattr(normalizer, "parse_title"):
@@ -98,6 +104,13 @@ def get_ef_url():
 def startup_log():
     print("[api] Booting… PORT=", os.getenv("PORT"), " PYTHONUNBUFFERED=", os.getenv("PYTHONUNBUFFERED"))
 
+def log_ef_config():
+    """Log Edge Function configuration status"""
+    supabase_url = get_supabase_url()
+    has_srk = bool(get_service_role_key())
+    has_function_secret = bool(get_function_secret())
+    print(f"[api] EF auth configured: url set={bool(supabase_url)}, has_srk={has_srk}, has_function_secret={has_function_secret}")
+
 # Don't call it during import - call it during startup instead
 
 @app.middleware("http")
@@ -128,6 +141,7 @@ async def startup_event():
     """Initialize HTTP client on startup"""
     print(f"[api] Starting up with strict timeouts: connect=5s, read={SCRAPER_TIMEOUT}s, write={SCRAPER_TIMEOUT}s")
     startup_log()
+    log_ef_config()
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -521,10 +535,11 @@ async def call_scraper(query: str) -> Dict[str, Any]:
 async def post_to_edge_function(payload: Dict[str, Any]) -> tuple[int, str]:
     """Post payload to Supabase Edge Function and return status and body"""
     # Use service role key for server-to-server authentication
-    auth_header = f"Bearer {get_service_role_key()}" if get_service_role_key() else ""
+    service_role_key = get_service_role_key()
+    function_secret = get_function_secret()
+    supabase_url = get_supabase_url()
     
     # Build the correct Edge Function URL
-    supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
     ef_url = f"{supabase_url}/functions/v1/ai-parser"
     
     headers = {
@@ -533,14 +548,14 @@ async def post_to_edge_function(payload: Dict[str, Any]) -> tuple[int, str]:
     }
     
     # Add Authorization header if we have a service role key
-    if auth_header:
-        headers["Authorization"] = auth_header
+    if service_role_key:
+        headers["Authorization"] = f"Bearer {service_role_key}"
     
-    # Add function secret header
-    function_secret = "f3a72c7d-6b59-4d2b-b0e8-9a83f07a54e2"
-    headers["x-function-secret"] = function_secret
+    # Add function secret header if we have it
+    if function_secret:
+        headers["x-function-secret"] = function_secret
     
-    print(f"[api] Calling Edge Function with auth: {'Bearer ***' if get_service_role_key() else 'None'}")
+    print(f"[api] Calling Edge Function with auth: {'Bearer ***' if service_role_key else 'None'}")
     print(f"[api] Edge Function URL: {ef_url}")
     print(f"[api] Request headers: {dict(headers)}")
     
@@ -587,7 +602,7 @@ async def root():
 async def health():
     """Early health that never touches external deps"""
     try:
-        supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
+        supabase_url = get_supabase_url()
         ef_url = f"{supabase_url}/functions/v1/ai-parser" if supabase_url else "NOT SET"
     except Exception:
         ef_url = "ERROR"
@@ -602,6 +617,47 @@ async def health():
             "ef_url": ef_url,
         },
     })
+
+@app.get("/diag-ef")
+async def diag_ef(ping: Optional[str] = None):
+    """Quick self-test route to test Edge Function connectivity"""
+    if ping != "1":
+        raise HTTPException(status_code=400, detail="Use ?ping=1 to test")
+    
+    trace_id = str(uuid.uuid4())[:8]
+    print(f"[api] /diag-ef called with trace_id: {trace_id}")
+    
+    try:
+        # Test payload
+        test_payload = {
+            "query": "diagnostic",
+            "items": [{
+                "title": "test",
+                "price": 1,
+                "currency": "USD",
+                "source": "ebay"
+            }]
+        }
+        
+        print(f"[api] Testing Edge Function with trace_id: {trace_id}")
+        status, body = await post_to_edge_function(test_payload)
+        
+        return JSONResponse({
+            "ok": status < 400,
+            "status": status,
+            "body": body,
+            "trace_id": trace_id,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        })
+        
+    except Exception as e:
+        print(f"[api] /diag-ef error: {e}")
+        return JSONResponse({
+            "ok": False,
+            "error": str(e),
+            "trace_id": trace_id,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        }, status_code=500)
 
 @app.post("/smoketest")
 async def smoketest():
