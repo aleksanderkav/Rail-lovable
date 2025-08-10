@@ -652,8 +652,14 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                 ef_start = time.time()
                 
                 try:
+                    # Prepare payload with query and items for Edge Function
+                    ef_payload = {
+                        "query": query,  # Include the original query
+                        "items": [item.dict() for item in normalized_data.items]
+                    }
+                    
                     ef_status, ef_body = await asyncio.wait_for(
-                        post_to_edge_function(normalized_data.dict()),
+                        post_to_edge_function(ef_payload),
                         timeout=EF_TIMEOUT
                     )
                     ef_time = time.time() - ef_start
@@ -876,140 +882,6 @@ async def normalize_test(request: NormalizeTestRequest, http_request: Request):
             content={
                 "ok": False,
                 "step": "scraper",
-                "error": str(e),
-                "trace": trace_id
-            },
-            status_code=500,
-            headers={
-                "X-Trace-Id": trace_id,
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-                "Access-Control-Allow-Headers": "*"
-            }
-        )
-
-@app.post("/ingest-items")
-async def ingest_items(request: IngestItemsRequest, http_request: Request):
-    """Forward normalized items to Supabase Edge Function"""
-    trace_id = str(uuid.uuid4())[:8]
-    client_ip = http_request.client.host if http_request.client else "unknown"
-    
-    print(f"[api] ingest-items request from {client_ip} items={len(request.items)} dry_run={request.dry_run} (trace: {trace_id})")
-    
-    # Validate request size
-    if len(request.items) > 200:
-        return JSONResponse(
-            content={
-                "ok": False,
-                "error": "Too many items (max 200)",
-                "trace": trace_id
-            },
-            status_code=413,
-            headers={
-                "X-Trace-Id": trace_id,
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-                "Access-Control-Allow-Headers": "*"
-            }
-        )
-    
-    try:
-        start_time = time.time()
-        
-        # Prepare payload for Edge Function
-        ef_payload = {
-            "raw_query": request.raw_query,
-            "items": [],
-            "dry_run": request.dry_run
-        }
-        
-        # Process each item
-        for item in request.items:
-            if "canonical_key" in item:
-                # Item already normalized, include canonical_key
-                ef_payload["items"].append(item)
-            else:
-                # Raw item, add normalized as subobject
-                normalized = normalizer.normalize_item(item)
-                ef_payload["items"].append({
-                    **item,
-                    "normalized": {
-                        "canonical_key": normalized.canonical_key,
-                        "parsed": {
-                            "set_name": normalized.parsed.set_name,
-                            "edition": normalized.parsed.edition,
-                            "number": normalized.parsed.number,
-                            "year": normalized.parsed.year,
-                            "grading_company": normalized.parsed.grading_company,
-                            "grade": normalized.parsed.grade,
-                            "is_holo": normalized.parsed.is_holo,
-                            "franchise": normalized.parsed.franchise
-                        },
-                        "confidence": normalized.confidence
-                    }
-                })
-        
-        # Call Edge Function
-        ef_start = time.time()
-        ef_status, ef_body = await asyncio.wait_for(
-            post_to_edge_function(ef_payload),
-            timeout=EF_TIMEOUT
-        )
-        ef_time = time.time() - ef_start
-        
-        # Parse EF response
-        try:
-            ef_response = json.loads(ef_body) if ef_body else {}
-            items_results = ef_response.get("items", [])
-        except json.JSONDecodeError:
-            items_results = []
-        
-        total_time = time.time() - start_time
-        external_ok = ef_status == 200
-        
-        print(f"[api] ingest-items items={len(request.items)} dry_run={request.dry_run} ef={ef_status} dur={total_time:.1f}s (trace: {trace_id})")
-        
-        return JSONResponse(
-            content=IngestItemsResponse(
-                ok=True,
-                externalOk=external_ok,
-                count=len(request.items),
-                items=items_results,
-                trace=trace_id
-            ).dict(),
-            headers={
-                "X-Trace-Id": trace_id,
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-                "Access-Control-Allow-Headers": "*"
-            }
-        )
-        
-    except asyncio.TimeoutError:
-        error_msg = f"Edge Function timeout ({EF_TIMEOUT}s)"
-        print(f"[api] ERROR: {error_msg} (trace: {trace_id})")
-        return JSONResponse(
-            content={
-                "ok": False,
-                "step": "edge_function",
-                "error": "timeout",
-                "trace": trace_id
-            },
-            status_code=502,
-            headers={
-                "X-Trace-Id": trace_id,
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-                "Access-Control-Allow-Headers": "*"
-            }
-        )
-    except Exception as e:
-        error_msg = f"Ingest failed: {str(e)}"
-        print(f"[api] ERROR: {error_msg} (trace: {trace_id})")
-        return JSONResponse(
-            content={
-                "ok": False,
-                "step": "ingest",
                 "error": str(e),
                 "trace": trace_id
             },
