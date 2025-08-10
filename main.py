@@ -37,14 +37,38 @@ http_client = httpx.AsyncClient(
 
 app = FastAPI(title="Rail-lovable Scraper", version="1.0.0")
 
-# Enable CORS for Lovable frontend
+# CORS configuration for Lovable frontend
+ALLOWED_ORIGINS = [
+    "https://preview--card-pulse-watch.lovable.app",
+    "https://card-pulse-watch.lovable.app",
+    "*",  # safe because allow_credentials=False
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
     allow_credentials=False,
+    expose_headers=["X-Trace-Id"],
 )
+
+@app.middleware("http")
+async def add_trace_and_log(request, call_next):
+    """Add trace ID and log all requests with origin, route, and status"""
+    import secrets
+    trace = secrets.token_hex(4)
+    origin = request.headers.get("origin")
+    path = request.url.path
+    method = request.method
+    resp = None
+    try:
+        resp = await call_next(request)
+        return resp
+    finally:
+        if resp: 
+            resp.headers["X-Trace-Id"] = trace
+        print(f"[api] {method} {path} origin={origin} status={getattr(resp,'status_code', '—')} trace={trace}")
 
 @app.on_event("startup")
 async def startup_event():
@@ -584,56 +608,30 @@ async def smoketest():
 @app.options("/scrape-now")
 async def scrape_now_options():
     """CORS preflight handler for /scrape-now"""
-    trace_id = str(uuid.uuid4())[:8]
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-            "X-Trace-Id": trace_id
-        }
-    )
+    # CORSMiddleware will add headers, but we ensure 200 with bodyless response
+    from fastapi.responses import Response
+    return Response(status_code=200)
 
 @app.options("/scrape-now/")
 async def scrape_now_options_trailing():
     """CORS preflight handler for /scrape-now/ (with trailing slash)"""
-    trace_id = str(uuid.uuid4())[:8]
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-            "X-Trace-Id": trace_id
-        }
-    )
+    # CORSMiddleware will add headers, but we ensure 200 with bodyless response
+    from fastapi.responses import Response
+    return Response(status_code=200)
 
 @app.options("/normalize-test")
 async def normalize_test_options():
     """Handle CORS preflight for /normalize-test"""
-    return JSONResponse(
-        content={"ok": True},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-            "X-Trace-Id": str(uuid.uuid4())[:8]
-        }
-    )
+    # CORSMiddleware will add headers, but we ensure 200 with bodyless response
+    from fastapi.responses import Response
+    return Response(status_code=200)
 
 @app.options("/ingest-items")
 async def ingest_items_options():
     """Handle CORS preflight for /ingest-items"""
-    return JSONResponse(
-        content={"ok": True},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-            "X-Trace-Id": str(uuid.uuid4())[:8]
-        }
-    )
+    # CORSMiddleware will add headers, but we ensure 200 with bodyless response
+    from fastapi.responses import Response
+    return Response(status_code=200)
 
 @app.post("/scrape-now")
 async def scrape_now(request: ScrapeRequest, http_request: Request):
@@ -753,6 +751,9 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                         "query": query,  # Include the original query
                         "items": [item.dict() for item in normalized_data.items]
                     }
+                    
+                    # Log Edge Function call details
+                    print(f"[api] Posting to EF: items={len(normalized_data.items)}, query_present={query is not None}")
                     
                     ef_status, ef_body = await asyncio.wait_for(
                         post_to_edge_function(ef_payload),
@@ -978,181 +979,6 @@ async def normalize_test(request: NormalizeTestRequest, http_request: Request):
             content={
                 "ok": False,
                 "step": "scraper",
-                "error": str(e),
-                "trace": trace_id
-            },
-            status_code=500,
-            headers={
-                "X-Trace-Id": trace_id,
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-                "Access-Control-Allow-Headers": "*"
-            }
-        )
-
-@app.options("/normalize-test")
-async def normalize_test_options():
-    """Handle CORS preflight for /normalize-test"""
-    return JSONResponse(
-        content={"ok": True},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-            "X-Trace-Id": str(uuid.uuid4())[:8]
-        }
-    )
-
-@app.post("/normalize-test")
-async def normalize_test(request: NormalizeTestRequest, http_request: Request):
-    """Normalize items locally without calling Edge Function"""
-    trace_id = str(uuid.uuid4())[:8]
-    client_ip = http_request.client.host if http_request.client else "unknown"
-    
-    print(f"[api] normalize-test request from {client_ip} (trace: {trace_id})")
-    
-    try:
-        start_time = time.time()
-        items = []
-        source = "items"
-        
-        if request.items:
-            # Normalize provided items
-            print(f"[api] Normalizing {len(request.items)} provided items (trace: {trace_id})")
-            for item in request.items:
-                normalized = normalizer.normalize_item(item)
-                items.append(NormalizedTestItem(
-                    title=normalized.title,
-                    url=normalized.url,
-                    price=normalized.price,
-                    currency=normalized.currency,
-                    ended_at=normalized.ended_at,
-                    id=normalized.id,
-                    source=normalized.source,
-                    parsed=ParsedHints(
-                        set_name=normalized.parsed.set_name,
-                        edition=normalized.parsed.edition,
-                        number=normalized.parsed.number,
-                        year=normalized.parsed.year,
-                        grading_company=normalized.parsed.grading_company,
-                        grade=normalized.parsed.grade,
-                        is_holo=normalized.parsed.is_holo,
-                        franchise=normalized.parsed.franchise,
-                        canonical_key=normalized.canonical_key,
-                        rarity=normalized.rarity,
-                        tags=normalized.tags,
-                        sold=normalized.sold,
-                        set=normalized.set,
-                        language=normalized.language,
-                        grader=normalized.grader,
-                        grade_value=normalized.grade_value
-                    ),
-                    canonical_key=normalized.canonical_key,
-                    confidence=normalized.confidence
-                ))
-        elif request.query:
-            # Call scraper and normalize results
-            print(f"[api] Scraping query '{request.query}' with limit {request.limit} (trace: {trace_id})")
-            source = "scraper"
-            
-            scraper_start = time.time()
-            scraper_data = await asyncio.wait_for(
-                call_scraper(request.query),
-                timeout=SCRAPER_TIMEOUT
-            )
-            scraper_time = time.time() - scraper_start
-            
-            print(f"[api] Scraper completed in {scraper_time:.2f}s (trace: {trace_id})")
-            
-            # Extract items from scraper response
-            raw_items = []
-            if "items" in scraper_data and isinstance(scraper_data["items"], list):
-                raw_items = scraper_data["items"][:request.limit]
-            elif "prices" in scraper_data and isinstance(scraper_data["prices"], list):
-                # Handle legacy format
-                raw_items = scraper_data["prices"][:request.limit]
-            
-            # Normalize items
-            for item in raw_items:
-                if isinstance(item, dict):
-                    normalized = normalizer.normalize_item(item)
-                    items.append(NormalizedTestItem(
-                        title=normalized.title,
-                        url=normalized.url,
-                        price=normalized.price,
-                        currency=normalized.currency,
-                        ended_at=normalized.ended_at,
-                        id=normalized.id,
-                        source=normalized.source,
-                        parsed=ParsedHints(
-                            set_name=normalized.parsed.set_name,
-                            edition=normalized.parsed.edition,
-                            number=normalized.parsed.number,
-                            year=normalized.parsed.year,
-                            grading_company=normalized.parsed.grading_company,
-                            grade=normalized.parsed.grade,
-                            is_holo=normalized.parsed.is_holo,
-                            franchise=normalized.parsed.franchise,
-                            canonical_key=normalized.canonical_key,
-                            rarity=normalized.rarity,
-                            tags=normalized.tags,
-                            sold=normalized.sold,
-                            set=normalized.set,
-                            language=normalized.language,
-                            grader=normalized.grader,
-                            grade_value=normalized.grade_value
-                        ),
-                        canonical_key=normalized.canonical_key,
-                        confidence=normalized.confidence
-                    ))
-        else:
-            raise HTTPException(status_code=400, detail="Either 'items' or 'query' must be provided")
-        
-        total_time = time.time() - start_time
-        
-        print(f"[api] normalize-test q=\"{request.query or 'items'}\" items={len(items)} dur={total_time:.1f}s (trace: {trace_id})")
-        
-        return JSONResponse(
-            content=NormalizeTestResponse(
-                ok=True,
-                source=source,
-                count=len(items),
-                items=items,
-                trace=trace_id
-            ).dict(),
-            headers={
-                "X-Trace-Id": trace_id,
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-                "Access-Control-Allow-Headers": "*"
-            }
-        )
-        
-    except asyncio.TimeoutError:
-        error_msg = f"Scraper timeout ({SCRAPER_TIMEOUT}s)"
-        print(f"[api] ERROR: {error_msg} (trace: {trace_id})")
-        return JSONResponse(
-            content={
-                "ok": False,
-                "step": "scraper",
-                "error": "timeout",
-                "trace": trace_id
-            },
-            status_code=502,
-            headers={
-                "X-Trace-Id": trace_id,
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-                "Access-Control-Allow-Headers": "*"
-            }
-        )
-    except Exception as e:
-        error_msg = f"Normalization failed: {str(e)}"
-        print(f"[api] ERROR: {error_msg} (trace: {trace_id})")
-        return JSONResponse(
-            content={
-                "ok": False,
-                "step": "normalize",
                 "error": str(e),
                 "trace": trace_id
             },
