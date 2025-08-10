@@ -211,16 +211,22 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     total_price = price
                 
                 items.append(Item(
+                    # Raw listing details (for AI extraction)
                     raw_title=title,
                     raw_description=item.get("description"),
                     source=item.get("source", "ebay"),
                     source_listing_id=item.get("id"),
                     url=item.get("url"),
+                    
+                    # Pricing and availability
                     currency=item.get("currency"),
                     price=price,
                     ended_at=item.get("ended_at"),
+                    
+                    # Media
                     images=[item.get("image_url")] if item.get("image_url") else None,
-                    raw_query=scraper_data.get("query"),
+                    
+                    # Initial parsed fields (if easily extractable during scraping)
                     franchise=parsed_hints.franchise if parsed_hints else None,
                     set_name=parsed_hints.set_name if parsed_hints else None,
                     edition=parsed_hints.edition if parsed_hints else None,
@@ -231,12 +237,30 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     grade=parsed_hints.grade if parsed_hints else None,
                     rarity=parsed_hints.rarity if parsed_hints else None,
                     is_holo=parsed_hints.is_holo if parsed_hints else None,
+                    
+                    # Tags (pre-filled if certain)
                     tags=parsed_hints.tags if parsed_hints else None,
+                    
+                    # Metadata for enrichment
+                    raw_query=scraper_data.get("query"),
+                    category_guess=item.get("category"),
+                    
+                    # Legacy fields for backward compatibility
+                    title=title,
+                    id=item.get("id"),
                     sold=sold,
+                    image_url=item.get("image_url"),
+                    shipping_price=item.get("shipping_price"),
+                    total_price=total_price,
+                    bids=item.get("bids"),
+                    condition=item.get("condition"),
                     canonical_key=item.get("canonical_key"),
                     set=item.get("set"),
                     grader=item.get("grader"),
-                    grade_value=item.get("grade_value")
+                    grade_value=item.get("grade_value"),
+                    
+                    # Parsed hints subobject
+                    parsed=parsed_hints
                 ))
     elif "price_entries" in scraper_data and isinstance(scraper_data["price_entries"], list):
         # Convert price entries to items
@@ -246,16 +270,22 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                 parsed_hints = normalizer.parse_title(title) if title else None
                 
                 items.append(Item(
+                    # Raw listing details (for AI extraction)
                     raw_title=title,
                     raw_description=None,
                     source="ebay",
                     source_listing_id=None,
                     url=None,
+                    
+                    # Pricing and availability
                     currency="USD",
                     price=entry.get("price"),
                     ended_at=None,
+                    
+                    # Media
                     images=None,
-                    raw_query=scraper_data.get("query"),
+                    
+                    # Initial parsed fields (if easily extractable during scraping)
                     franchise=parsed_hints.franchise if parsed_hints else None,
                     set_name=parsed_hints.set_name if parsed_hints else None,
                     edition=parsed_hints.edition if parsed_hints else None,
@@ -266,12 +296,30 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     grade=parsed_hints.grade if parsed_hints else None,
                     rarity=parsed_hints.rarity if parsed_hints else None,
                     is_holo=parsed_hints.is_holo if parsed_hints else None,
+                    
+                    # Tags (pre-filled if certain)
                     tags=parsed_hints.tags if parsed_hints else None,
-                    sold=None,
+                    
+                    # Metadata for enrichment
+                    raw_query=scraper_data.get("query"),
+                    category_guess=None,
+                    
+                    # Legacy fields for backward compatibility
+                    title=title,
+                    id=None,
+                    sold=False,  # Price entries are typically active listings
+                    image_url=None,
+                    shipping_price=None,
+                    total_price=entry.get("price"),
+                    bids=None,
+                    condition=None,
                     canonical_key=None,
                     set=None,
                     grader=None,
-                    grade_value=None
+                    grade_value=None,
+                    
+                    # Parsed hints subobject
+                    parsed=parsed_hints
                 ))
     elif "prices" in scraper_data and isinstance(scraper_data["prices"], list):
         # Convert prices array to items
@@ -281,16 +329,22 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                 parsed_hints = normalizer.parse_title(title) if title else None
                 
                 items.append(Item(
+                    # Raw listing details (for AI extraction)
                     raw_title=title,
                     raw_description=None,
                     source="ebay",
                     source_listing_id=None,
                     url=None,
+                    
+                    # Pricing and availability
                     currency="USD",
                     price=float(price),
                     ended_at=None,
+                    
+                    # Media
                     images=None,
-                    raw_query=scraper_data.get("query"),
+                    
+                    # Initial parsed fields (if easily extractable during scraping)
                     franchise=parsed_hints.franchise if parsed_hints else None,
                     set_name=parsed_hints.set_name if parsed_hints else None,
                     edition=parsed_hints.edition if parsed_hints else None,
@@ -301,12 +355,30 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     grade=parsed_hints.grade if parsed_hints else None,
                     rarity=parsed_hints.rarity if parsed_hints else None,
                     is_holo=parsed_hints.is_holo if parsed_hints else None,
+                    
+                    # Tags (pre-filled if certain)
                     tags=parsed_hints.tags if parsed_hints else None,
-                    sold=None,
+                    
+                    # Metadata for enrichment
+                    raw_query=scraper_data.get("query"),
+                    category_guess=None,
+                    
+                    # Legacy fields for backward compatibility
+                    title=title,
+                    id=None,
+                    sold=False,  # Price entries are typically active listings
+                    image_url=None,
+                    shipping_price=None,
+                    total_price=float(price),
+                    bids=None,
+                    condition=None,
                     canonical_key=None,
                     set=None,
                     grader=None,
-                    grade_value=None
+                    grade_value=None,
+                    
+                    # Parsed hints subobject
+                    parsed=parsed_hints
                 ))
     
     # If no items found, create a default item with query info
@@ -315,16 +387,22 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
         parsed_hints = normalizer.parse_title(title) if title else None
         
         items.append(Item(
+            # Raw listing details (for AI extraction)
             raw_title=title,
             raw_description=None,
             source="ebay",
             source_listing_id=None,
             url=None,
+            
+            # Pricing and availability
             currency="USD",
             price=scraper_data.get("average"),
             ended_at=None,
+            
+            # Media
             images=None,
-            raw_query=scraper_data.get("query"),
+            
+            # Initial parsed fields (if easily extractable during scraping)
             franchise=parsed_hints.franchise if parsed_hints else None,
             set_name=parsed_hints.set_name if parsed_hints else None,
             edition=parsed_hints.edition if parsed_hints else None,
@@ -335,12 +413,30 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
             grade=parsed_hints.grade if parsed_hints else None,
             rarity=parsed_hints.rarity if parsed_hints else None,
             is_holo=parsed_hints.is_holo if parsed_hints else None,
+            
+            # Tags (pre-filled if certain)
             tags=parsed_hints.tags if parsed_hints else None,
-            sold=None,
+            
+            # Metadata for enrichment
+            raw_query=scraper_data.get("query"),
+            category_guess=None,
+            
+            # Legacy fields for backward compatibility
+            title=title,
+            id=None,
+            sold=False,  # Default item is typically active
+            image_url=None,
+            shipping_price=None,
+            total_price=scraper_data.get("average"),
+            bids=None,
+            condition=None,
             canonical_key=None,
             set=None,
             grader=None,
-            grade_value=None
+            grade_value=None,
+            
+            # Parsed hints subobject
+            parsed=parsed_hints
         ))
     
     return NormalizedResponse(items=items)
