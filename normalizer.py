@@ -4,411 +4,308 @@ Mirrors the canonical fields Lovable will use for AI-assisted deduping.
 """
 
 import re
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from dataclasses import dataclass
 
 @dataclass
 class ParsedHints:
-    """Parsed hints from card titles and metadata"""
+    """Parsed hints from title/description for AI enrichment"""
+    # Core card identification
+    franchise: Optional[str] = None
     set_name: Optional[str] = None
     edition: Optional[str] = None
     number: Optional[str] = None
     year: Optional[int] = None
+    language: Optional[str] = None
+    
+    # Grading information
     grading_company: Optional[str] = None
     grade: Optional[str] = None
-    is_holo: Optional[bool] = None
-    franchise: str = "pokemon"
-    # New canonicalized fields
-    canonical_key: Optional[str] = None
-    rarity: Optional[str] = None
-    tags: Optional[list] = None
-    sold: Optional[bool] = None
-    # Normalized fields
-    set: Optional[str] = None
-    language: Optional[str] = None
-    grader: Optional[str] = None
     grade_value: Optional[int] = None
+    
+    # Card characteristics
+    rarity: Optional[str] = None
+    is_holo: Optional[bool] = None
+    
+    # Legacy fields for backward compatibility
+    canonical_key: Optional[str] = None
+    tags: Optional[List[str]] = None
+    sold: Optional[bool] = None
+    set: Optional[str] = None
+    grader: Optional[str] = None
 
 @dataclass
 class NormalizedItem:
-    """Normalized item with canonical fields"""
-    title: str
+    """Normalized item with AI enrichment support"""
+    # Core fields
+    raw_title: str
     canonical_key: str
-    confidence: Dict[str, float]
+    confidence: float
     parsed: ParsedHints
-    url: Optional[str] = None
-    price: Optional[float] = None
-    currency: Optional[str] = None
-    ended_at: Optional[str] = None
-    id: Optional[str] = None
+    
+    # Raw listing details
+    raw_description: Optional[str] = None
     source: str = "ebay"
-    # New canonicalized fields
-    rarity: Optional[str] = None
-    grading_company: Optional[str] = None
-    grade: Optional[str] = None
-    tags: Optional[list] = None
-    sold: Optional[bool] = None
-    # Normalized fields
-    set: Optional[str] = None
+    source_listing_id: Optional[str] = None
+    url: Optional[str] = None
+    
+    # Pricing and availability
+    currency: str = "USD"
+    price: Optional[float] = None
+    ended_at: Optional[str] = None
+    
+    # Media
+    images: Optional[List[str]] = None
+    
+    # Initial parsed fields
+    franchise: Optional[str] = None
+    set_name: Optional[str] = None
     edition: Optional[str] = None
+    number: Optional[str] = None
     year: Optional[int] = None
     language: Optional[str] = None
+    grading_company: Optional[str] = None
+    grade: Optional[str] = None
+    rarity: Optional[str] = None
+    is_holo: Optional[bool] = None
+    
+    # Tags
+    tags: Optional[List[str]] = None
+    
+    # Metadata for enrichment
+    raw_query: Optional[str] = None
+    category_guess: Optional[str] = None
+    
+    # Legacy fields for backward compatibility
+    title: Optional[str] = None
+    id: Optional[str] = None
+    sold: Optional[bool] = None
+    image_url: Optional[str] = None
+    shipping_price: Optional[float] = None
+    total_price: Optional[float] = None
+    bids: Optional[int] = None
+    condition: Optional[str] = None
+    canonical_key_legacy: Optional[str] = None
+    set_legacy: Optional[str] = None
     grader: Optional[str] = None
     grade_value: Optional[int] = None
 
 class CardNormalizer:
-    """Normalizes card listings and generates canonical keys"""
-    
-    # Common Pokemon sets and their variations
-    POKEMON_SETS = {
-        "base set": ["base", "base set", "base set unlimited"],
-        "base set 1st edition": ["base set 1st edition", "1st edition base set", "base 1st"],
-        "jungle": ["jungle", "jungle unlimited"],
-        "fossil": ["fossil", "fossil unlimited"],
-        "team rocket": ["team rocket", "team rocket unlimited"],
-        "gym heroes": ["gym heroes", "gym heroes unlimited"],
-        "gym challenge": ["gym challenge", "gym challenge unlimited"],
-        "neo genesis": ["neo genesis", "neo genesis unlimited"],
-        "neo discovery": ["neo discovery", "neo discovery unlimited"],
-        "neo revelation": ["neo revelation", "neo revelation unlimited"],
-        "neo destiny": ["neo destiny", "neo destiny unlimited"],
-        "legendary collection": ["legendary collection", "lc"],
-        "expedition base set": ["expedition base set", "expedition"],
-        "aquapolis": ["aquapolis"],
-        "skyridge": ["skyridge"],
-        "ex ruby & sapphire": ["ex ruby & sapphire", "ex ruby and sapphire", "ex rs"],
-        "ex sandstorm": ["ex sandstorm"],
-        "ex dragon": ["ex dragon"],
-        "ex team magma vs team aqua": ["ex team magma vs team aqua", "ex tmta"],
-        "ex hidden legends": ["ex hidden legends"],
-        "ex fire red & leaf green": ["ex fire red & leaf green", "ex frlg"],
-        "ex team rocket returns": ["ex team rocket returns", "ex trr"],
-        "ex deoxys": ["ex deoxys"],
-        "ex emerald": ["ex emerald"],
-        "ex unseen forces": ["ex unseen forces"],
-        "ex delta species": ["ex delta species"],
-        "ex legend maker": ["ex legend maker"],
-        "ex holon phantoms": ["ex holon phantoms"],
-        "ex crystal guardians": ["ex crystal guardians"],
-        "ex dragon frontiers": ["ex dragon frontiers"],
-        "ex power keepers": ["ex power keepers"],
-        "diamond & pearl": ["diamond & pearl", "diamond and pearl", "dp"],
-        "mysterious treasures": ["mysterious treasures"],
-        "secret wonders": ["secret wonders"],
-        "great encounters": ["great encounters"],
-        "majestic dawn": ["majestic dawn"],
-        "legends awakened": ["legends awakened"],
-        "stormfront": ["stormfront"],
-        "platinum": ["platinum"],
-        "rising rivals": ["rising rivals"],
-        "supreme victors": ["supreme victors"],
-        "arceus": ["arceus"],
-        "heartgold & soulsilver": ["heartgold & soulsilver", "hgss"],
-        "unleashed": ["unleashed"],
-        "undaunted": ["undaunted"],
-        "triumphant": ["triumphant"],
-        "call of legends": ["call of legends"],
-        "black & white": ["black & white", "bw"],
-        "emerging powers": ["emerging powers"],
-        "noble victories": ["noble victories"],
-        "next destinies": ["next destinies"],
-        "dark explorers": ["dark explorers"],
-        "dragons exalted": ["dragons exalted"],
-        "boundaries crossed": ["boundaries crossed"],
-        "plasma storm": ["plasma storm"],
-        "plasma freeze": ["plasma freeze"],
-        "plasma blast": ["plasma blast"],
-        "legendary treasures": ["legendary treasures"],
-        "xy": ["xy"],
-        "flashfire": ["flashfire"],
-        "furious fists": ["furious fists"],
-        "phantom forces": ["phantom forces"],
-        "primal clash": ["primal clash"],
-        "roaring skies": ["roaring skies"],
-        "ancient origins": ["ancient origins"],
-        "breakthrough": ["breakthrough"],
-        "breakpoint": ["breakpoint"],
-        "generations": ["generations"],
-        "fates collide": ["fates collide"],
-        "steam siege": ["steam siege"],
-        "evolutions": ["evolutions"],
-        "sun & moon": ["sun & moon", "sm"],
-        "guardians rising": ["guardians rising"],
-        "burning shadows": ["burning shadows"],
-        "shining legends": ["shining legends"],
-        "crimson invasion": ["crimson invasion"],
-        "ultra prism": ["ultra prism"],
-        "forbidden light": ["forbidden light"],
-        "celestial storm": ["celestial storm"],
-        "dragon majesty": ["dragon majesty"],
-        "lost thunder": ["lost thunder"],
-        "team up": ["team up"],
-        "detective pikachu": ["detective pikachu"],
-        "unbroken bonds": ["unbroken bonds"],
-        "unified minds": ["unified minds"],
-        "hidden fates": ["hidden fates"],
-        "cosmic eclipse": ["cosmic eclipse"],
-        "sword & shield": ["sword & shield", "ss"],
-        "rebel clash": ["rebel clash"],
-        "darkness ablaze": ["darkness ablaze"],
-        "champions path": ["champions path"],
-        "vivid voltage": ["vivid voltage"],
-        "shining fates": ["shining fates"],
-        "battle styles": ["battle styles"],
-        "chilling reign": ["chilling reign"],
-        "evolving skies": ["evolving skies"],
-        "celebrations": ["celebrations"],
-        "fusion strike": ["fusion strike"],
-        "brilliant stars": ["brilliant stars"],
-        "astral radiance": ["astral radiance"],
-        "lost origin": ["lost origin"],
-        "silver tempest": ["silver tempest"],
-        "crown zenith": ["crown zenith"],
-        "scarlet & violet": ["scarlet & violet", "sv"],
-        "paldea evolved": ["paldea evolved"],
-        "obsidian flames": ["obsidian flames"],
-        "151": ["151"],
-        "paradigm rift": ["paradigm rift"],
-        "temporal forces": ["temporal forces"],
-        "twilight masquerade": ["twilight masquerade"],
-        "ancient roar": ["ancient roar"],
-        "future flash": ["future flash"],
-    }
-    
-    # Grading companies
-    GRADING_COMPANIES = {
-        "psa": ["psa", "professional sports authenticator"],
-        "bgs": ["bgs", "beckett grading services", "beckett"],
-        "cgc": ["cgc", "certified guarantee company"],
-        "sgc": ["sgc", "sportscard guarantee"],
-        "hga": ["hga", "hybrid grading approach"],
-        "ace": ["ace", "ace grading"],
-        "gma": ["gma", "gem mint authentication"],
-    }
-    
-    # Editions/prints
-    EDITIONS = {
-        "1st edition": ["1st edition", "1st ed", "first edition", "first ed"],
-        "unlimited": ["unlimited", "unl", "unltd"],
-        "shadowless": ["shadowless", "shadow less"],
-        "reverse holo": ["reverse holo", "reverse holographic", "rev holo"],
-        "holo": ["holo", "holographic", "holographic"],
-        "non-holo": ["non-holo", "non holo", "non-holographic"],
-    }
+    """Normalizes card listings for AI enrichment"""
     
     def __init__(self):
-        # Build reverse lookup maps
-        self._set_lookup = {}
-        for canonical, variants in self.POKEMON_SETS.items():
-            for variant in variants:
-                self._set_lookup[variant.lower()] = canonical
+        # Common franchises
+        self.franchises = {
+            "pokemon": ["pokemon", "pokémon", "pikachu", "charizard", "blastoise", "venusaur"],
+            "magic": ["magic", "mtg", "planeswalker", "mana", "spell"],
+            "yugioh": ["yugioh", "yu-gi-oh", "duel monster", "blue eyes", "dark magician"],
+            "sports": ["basketball", "football", "baseball", "hockey", "soccer", "nba", "nfl", "mlb", "nhl"]
+        }
         
-        self._grading_lookup = {}
-        for canonical, variants in self.GRADING_COMPANIES.items():
-            for variant in variants:
-                self._grading_lookup[variant.lower()] = canonical
+        # Common grading companies
+        self.grading_companies = ["psa", "bgs", "cgc", "sgc", "hga", "ace"]
         
-        self._edition_lookup = {}
-        for canonical, variants in self.EDITIONS.items():
-            for variant in variants:
-                self._edition_lookup[variant.lower()] = canonical
-    
+        # Common editions
+        self.editions = ["1st edition", "first edition", "unlimited", "shadowless", "limited"]
+        
+        # Common sets (Pokemon examples)
+        self.pokemon_sets = ["base set", "jungle", "fossil", "team rocket", "gym heroes", "neo genesis"]
+        
     def parse_title(self, title: str) -> ParsedHints:
-        """Parse card title to extract hints"""
-        if not title:
-            return ParsedHints()
-        
+        """Parse title to extract initial hints"""
         title_lower = title.lower()
-        hints = ParsedHints()
         
-        # Extract set name
-        for variant, canonical in self._set_lookup.items():
-            if variant in title_lower:
-                hints.set_name = canonical
+        # Detect franchise
+        franchise = None
+        for name, keywords in self.franchises.items():
+            if any(keyword in title_lower for keyword in keywords):
+                franchise = name.title()
                 break
         
-        # Extract edition
-        for variant, canonical in self._edition_lookup.items():
-            if variant in title_lower:
-                hints.edition = canonical
+        # Detect grading company
+        grading_company = None
+        for company in self.grading_companies:
+            if company in title_lower:
+                grading_company = company.upper()
                 break
         
-        # Extract grading company and grade
-        for variant, canonical in self._grading_lookup.items():
-            if variant in title_lower:
-                hints.grading_company = canonical
-                # Look for grade after grading company
-                grade_match = re.search(rf'{re.escape(variant)}\s*(\d+)', title_lower)
-                if grade_match:
-                    hints.grade = grade_match.group(1)
+        # Detect edition
+        edition = None
+        for ed in self.editions:
+            if ed in title_lower:
+                edition = ed.title()
                 break
         
-        # Extract year (4-digit year)
-        year_match = re.search(r'\b(19[89]\d|20[0-2]\d)\b', title)
+        # Detect set name (Pokemon specific for now)
+        set_name = None
+        for set_keyword in self.pokemon_sets:
+            if set_keyword in title_lower:
+                set_name = set_keyword.title()
+                break
+        
+        # Detect year (4-digit numbers that could be years)
+        year = None
+        year_match = re.search(r'\b(19|20)\d{2}\b', title)
         if year_match:
-            hints.year = int(year_match.group(1))
+            year = int(year_match.group())
         
-        # Extract card number
+        # Detect card number
+        number = None
         number_match = re.search(r'\b(\d{1,3})\b', title)
         if number_match:
-            hints.number = number_match.group(1)
+            number = number_match.group()
         
-        # Check for holographic indicators
-        holo_indicators = ["holo", "holographic", "holographic", "reverse holo", "reverse holographic"]
-        hints.is_holo = any(indicator in title_lower for indicator in holo_indicators)
+        # Detect grade
+        grade = None
+        grade_match = re.search(r'\b(10|9|8|7|6|5|4|3|2|1|mint|gem|near mint|excellent|good|fair|poor)\b', title_lower)
+        if grade_match:
+            grade = grade_match.group()
         
-        return hints
+        # Detect if holo
+        is_holo = "holo" in title_lower or "holofoil" in title_lower
+        
+        # Generate tags
+        tags = []
+        if grading_company:
+            tags.append(f"{grading_company} {grade}" if grade else grading_company)
+        if edition:
+            tags.append(edition)
+        if is_holo:
+            tags.append("Holo")
+        if set_name:
+            tags.append(set_name)
+        
+        return ParsedHints(
+            franchise=franchise,
+            set_name=set_name,
+            edition=edition,
+            number=number,
+            year=year,
+            grading_company=grading_company,
+            grade=grade,
+            is_holo=is_holo,
+            tags=tags if tags else None
+        )
     
     def generate_canonical_key(self, title: str, parsed: ParsedHints) -> str:
-        """Generate deterministic canonical key"""
-        parts = ["pokemon"]
+        """Generate a canonical key for the card"""
+        if parsed.franchise and parsed.set_name and parsed.number:
+            return f"{parsed.franchise.lower()}_{parsed.set_name.lower().replace(' ', '_')}_{parsed.number}"
+        elif parsed.franchise and parsed.set_name:
+            return f"{parsed.franchise.lower()}_{parsed.set_name.lower().replace(' ', '_')}"
+        else:
+            # Fallback to title-based key
+            return re.sub(r'[^a-zA-Z0-9]', '_', title.lower()).strip('_')
+    
+    def compute_confidence(self, title: str, parsed: ParsedHints) -> float:
+        """Compute confidence score for parsing"""
+        score = 0.0
         
-        # Add set name (normalized)
+        if parsed.franchise:
+            score += 0.3
         if parsed.set_name:
-            parts.append(parsed.set_name.lower().replace(" ", "_"))
-        else:
-            parts.append("unknown_set")
-        
-        # Add card name (extract from title)
-        card_name = self._extract_card_name(title, parsed.set_name)
-        parts.append(card_name.lower().replace(" ", "_"))
-        
-        # Add edition
-        if parsed.edition:
-            parts.append(parsed.edition.lower().replace(" ", "_"))
-        else:
-            parts.append("unknown_edition")
-        
-        # Add number
+            score += 0.2
         if parsed.number:
-            parts.append(parsed.number)
-        else:
-            parts.append("unknown_number")
-        
-        # Add year
-        if parsed.year:
-            parts.append(str(parsed.year))
-        else:
-            parts.append("unknown_year")
-        
-        # Add grading company
+            score += 0.2
         if parsed.grading_company:
-            parts.append(parsed.grading_company.lower())
-        else:
-            parts.append("ungraded")
-        
-        # Add grade
+            score += 0.15
         if parsed.grade:
-            parts.append(parsed.grade)
-        else:
-            parts.append("ungraded")
+            score += 0.15
         
-        return "|".join(parts)
-    
-    def _extract_card_name(self, title: str, set_name: Optional[str]) -> str:
-        """Extract card name from title, removing set info"""
-        if not title:
-            return "unknown"
-        
-        # Remove common set indicators
-        title_clean = title.lower()
-        if set_name:
-            title_clean = title_clean.replace(set_name.lower(), "")
-        
-        # Remove common words
-        common_words = ["pokemon", "card", "trading", "game", "holo", "holographic", "1st", "edition", "unlimited"]
-        for word in common_words:
-            title_clean = title_clean.replace(word, "")
-        
-        # Clean up extra spaces and punctuation
-        title_clean = re.sub(r'\s+', ' ', title_clean).strip()
-        title_clean = re.sub(r'[^\w\s]', '', title_clean)
-        
-        if not title_clean:
-            return "unknown"
-        
-        return title_clean
-    
-    def compute_confidence(self, title: str, parsed: ParsedHints) -> Dict[str, float]:
-        """Compute confidence scores for parsing"""
-        confidence = {"title_parse": 0.0, "overall": 0.0}
-        
-        if not title:
-            return confidence
-        
-        # Title parse confidence based on how many fields we extracted
-        extracted_fields = 0
-        total_fields = 4  # set_name, edition, grading_company, grade
-        
-        if parsed.set_name:
-            extracted_fields += 1
-        if parsed.edition:
-            extracted_fields += 1
-        if parsed.grading_company:
-            extracted_fields += 1
-        if parsed.grade:
-            extracted_fields += 1
-        
-        confidence["title_parse"] = extracted_fields / total_fields
-        
-        # Overall confidence (can be enhanced with more factors)
-        confidence["overall"] = confidence["title_parse"] * 0.8 + 0.2
-        
-        return confidence
+        return min(score, 1.0)
     
     def normalize_item(self, item: Dict[str, Any]) -> NormalizedItem:
         """Normalize a single item"""
-        title = item.get("title", "")
+        raw_title = item.get("raw_title", item.get("title", ""))
         
         # Parse hints from title
-        parsed = self.parse_title(title)
+        parsed = self.parse_title(raw_title)
         
         # Generate canonical key
-        canonical_key = self.generate_canonical_key(title, parsed)
+        canonical_key = self.generate_canonical_key(raw_title, parsed)
         
         # Compute confidence
-        confidence = self.compute_confidence(title, parsed)
+        confidence = self.compute_confidence(raw_title, parsed)
         
-        # Extract new canonicalized fields from item
-        rarity = item.get("rarity")
-        grading_company = item.get("grading_company")
-        grade = item.get("grade")
-        tags = item.get("tags")
+        # Extract fields from item
+        raw_description = item.get("raw_description")
+        source = item.get("source", "ebay")
+        source_listing_id = item.get("source_listing_id") or item.get("id")
+        url = item.get("url")
+        currency = item.get("currency", "USD")
+        price = item.get("price")
+        ended_at = item.get("ended_at")
+        images = item.get("images")
+        raw_query = item.get("raw_query")
+        category_guess = item.get("category_guess")
+        
+        # Extract initial parsed fields (override with item data if available)
+        franchise = item.get("franchise") or parsed.franchise
+        set_name = item.get("set_name") or parsed.set_name
+        edition = item.get("edition") or parsed.edition
+        number = item.get("number") or parsed.number
+        year = item.get("year") or parsed.year
+        language = item.get("language") or parsed.language
+        grading_company = item.get("grading_company") or parsed.grading_company
+        grade = item.get("grade") or parsed.grade
+        rarity = item.get("rarity") or parsed.rarity
+        is_holo = item.get("is_holo") if item.get("is_holo") is not None else parsed.is_holo
+        
+        # Extract tags
+        tags = item.get("tags") or parsed.tags
+        
+        # Legacy fields for backward compatibility
+        title = item.get("title") or raw_title
         sold = item.get("sold")
-        
-        # Extract normalized fields
-        set_name = item.get("set")
-        edition = item.get("edition")
-        year = item.get("year")
-        language = item.get("language")
+        image_url = item.get("image_url")
+        shipping_price = item.get("shipping_price")
+        total_price = item.get("total_price")
+        bids = item.get("bids")
+        condition = item.get("condition")
+        canonical_key_legacy = item.get("canonical_key")
+        set_legacy = item.get("set")
         grader = item.get("grader")
         grade_value = item.get("grade_value")
         
         return NormalizedItem(
-            title=title,
-            url=item.get("url"),
-            price=item.get("price"),
-            currency=item.get("currency", "USD"),
-            ended_at=item.get("ended_at"),
-            id=item.get("id"),
-            source=item.get("source", "ebay"),
-            parsed=parsed,
+            raw_title=raw_title,
             canonical_key=canonical_key,
             confidence=confidence,
-            # New canonicalized fields
-            rarity=rarity,
-            grading_company=grading_company,
-            grade=grade,
-            tags=tags,
-            sold=sold,
-            # Normalized fields
-            set=set_name,
+            parsed=parsed,
+            raw_description=raw_description,
+            source=source,
+            source_listing_id=source_listing_id,
+            url=url,
+            currency=currency,
+            price=price,
+            ended_at=ended_at,
+            images=images,
+            franchise=franchise,
+            set_name=set_name,
             edition=edition,
+            number=number,
             year=year,
             language=language,
+            grading_company=grading_company,
+            grade=grade,
+            rarity=rarity,
+            is_holo=is_holo,
+            tags=tags,
+            raw_query=raw_query,
+            category_guess=category_guess,
+            title=title,
+            id=source_listing_id,
+            sold=sold,
+            image_url=image_url,
+            shipping_price=shipping_price,
+            total_price=total_price,
+            bids=bids,
+            condition=condition,
+            canonical_key_legacy=canonical_key_legacy,
+            set_legacy=set_legacy,
             grader=grader,
             grade_value=grade_value
         )
 
-# Global instance
+# Create a global instance
 normalizer = CardNormalizer() 
