@@ -71,14 +71,20 @@ async def add_trace_and_log(request, call_next):
     origin = request.headers.get("origin")
     path = request.url.path
     method = request.method
-    resp = None
+    
     try:
         resp = await call_next(request)
-        return resp
-    finally:
-        if resp: 
+        # Add trace ID to response headers
+        if hasattr(resp, 'headers'):
             resp.headers["X-Trace-Id"] = trace
-        print(f"[api] {method} {path} origin={origin} status={getattr(resp,'status_code', '—')} trace={trace}")
+        # Log the request with status
+        status = getattr(resp, 'status_code', '—') if resp else '—'
+        print(f"[api] {method} {path} origin={origin} status={status} trace={trace}")
+        return resp
+    except Exception as e:
+        # Log any errors that occur during request processing
+        print(f"[api] {method} {path} origin={origin} status=ERROR trace={trace} error={str(e)}")
+        raise
 
 @app.on_event("startup")
 async def startup_event():
