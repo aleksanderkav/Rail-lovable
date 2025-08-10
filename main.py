@@ -624,14 +624,16 @@ async def diag_ef(ping: Optional[str] = None):
     print(f"[api] /diag-ef called with trace_id: {trace_id}")
     
     try:
-        # Test payload
+        # Test payload - match the format expected by the Edge Function
         test_payload = {
             "query": "diagnostic",
             "items": [{
-                "title": "test",
-                "price": 1,
+                "title": "test item",  # Edge Function expects this field
+                "raw_title": "test item",
+                "price": 1.0,
                 "currency": "USD",
-                "source": "ebay"
+                "source": "ebay",
+                "raw_description": "test description"
             }]
         }
         
@@ -845,11 +847,20 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                     # Prepare payload with query and items for Edge Function
                     ef_payload = {
                         "query": query,  # Include the original query
-                        "items": [item.dict() for item in normalized_data.items]
+                        "items": []
                     }
                     
+                    # Convert items to dict and ensure each has a title field
+                    for item in normalized_data.items:
+                        item_dict = item.dict()
+                        # Ensure title field exists for Edge Function
+                        if not item_dict.get("title") and item_dict.get("raw_title"):
+                            item_dict["title"] = item_dict["raw_title"]
+                        ef_payload["items"].append(item_dict)
+                    
                     # Log Edge Function call details
-                    print(f"[api] Posting to EF: items={len(normalized_data.items)}, query_present={query is not None}")
+                    print(f"[api] Posting to EF: items={len(ef_payload['items'])}, query_present={query is not None}")
+                    print(f"[api] First item title: {ef_payload['items'][0].get('title', 'NO_TITLE') if ef_payload['items'] else 'NO_ITEMS'}")
                     
                     ef_status, ef_body = await asyncio.wait_for(
                         post_to_edge_function(ef_payload),
