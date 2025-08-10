@@ -36,10 +36,10 @@ def get_sleep_jitter_secs():
 def get_request_timeout_secs():
     return int(os.getenv("REQUEST_TIMEOUT_SECS", "60"))
 
-# Scraping settings - use lazy functions
-BATCH_LIMIT = get_batch_limit()
-SLEEP_JITTER_SECS = get_sleep_jitter_secs()
-REQUEST_TIMEOUT_SECS = get_request_timeout_secs()
+# Scraping settings - access lazily when needed
+# BATCH_LIMIT = get_batch_limit()
+# SLEEP_JITTER_SECS = get_sleep_jitter_secs()
+# REQUEST_TIMEOUT_SECS = get_request_timeout_secs()
 
 def now_iso() -> str:
     """Get current time in ISO format"""
@@ -332,25 +332,25 @@ async def main():
     print(f"   SCRAPER_BASE_URL: {'✅ Set' if get_scraper_base_url() else '❌ Not set'}")
     print(f"   SUPABASE_FUNCTION_URL: {'✅ Set' if get_supabase_function_url() else '❌ Not set'}")
     print(f"   SUPABASE_FUNCTION_TOKEN: {'✅ Set' if get_supabase_function_token() else '❌ Not set'}")
-    print(f"   BATCH_LIMIT: {BATCH_LIMIT}")
-    print(f"   SLEEP_JITTER_SECS: {SLEEP_JITTER_SECS}")
+    print(f"   BATCH_LIMIT: {get_batch_limit()}")
+    print(f"   SLEEP_JITTER_SECS: {get_sleep_jitter_secs()}")
     
     # Get queries to process
     queries = await get_tracked_queries()
     print(f"[cron] Processing {len(queries)} queries")
     
     # Process queries in batches
-    for i in range(0, len(queries), BATCH_LIMIT):
-        batch = queries[i:i + BATCH_LIMIT]
-        print(f"[cron] Processing batch {i//BATCH_LIMIT + 1}: {len(batch)} queries")
+    for i in range(0, len(queries), get_batch_limit()):
+        batch = queries[i:i + get_batch_limit()]
+        print(f"[cron] Processing batch {i//get_batch_limit() + 1}: {len(batch)} queries")
         
         # Process batch concurrently
         tasks = [process_query(query) for query in batch]
         await asyncio.gather(*tasks, return_exceptions=True)
         
         # Sleep between batches (with jitter)
-        if i + BATCH_LIMIT < len(queries):
-            sleep_time = SLEEP_JITTER_SECS + (hash(str(i)) % 1000) / 1000.0
+        if i + get_batch_limit() < len(queries):
+            sleep_time = get_sleep_jitter_secs() + (hash(str(i)) % 1000) / 1000.0
             print(f"[cron] Sleeping {sleep_time:.2f}s before next batch")
             await asyncio.sleep(sleep_time)
     

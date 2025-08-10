@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
 # Import the existing scraper functions - only import functions, not environment variables
-from scheduled_scraper import now_iso
+# from scheduled_scraper import now_iso
 
 # Safe normalizer import with fallback
 try:
@@ -749,7 +749,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
     trace_id = str(uuid.uuid4())[:8]
     
     # Log the incoming request
-    print(f"[api] {now_iso()} Manual scrape request from {client_ip}: '{query}' (trace: {trace_id})")
+    print(f"[api] {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} Manual scrape request from {client_ip}: '{query}' (trace: {trace_id})")
     
     # Global timeout for entire request (25 seconds max)
     async with asyncio.timeout(GLOBAL_TIMEOUT):
