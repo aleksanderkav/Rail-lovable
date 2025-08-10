@@ -12,11 +12,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
-# Import the existing scraper functions
-from scheduled_scraper import (
-    SCRAPER_BASE_URL, SUPABASE_FUNCTION_URL,
-    now_iso
-)
+# Import the existing scraper functions - only import functions, not environment variables
+from scheduled_scraper import now_iso
 
 # Safe normalizer import with fallback
 try:
@@ -508,7 +505,7 @@ async def call_scraper(query: str) -> Dict[str, Any]:
     
     for attempt in range(max_retries + 1):
         try:
-            response = await http_client.get(f"{SCRAPER_BASE_URL}/scrape", params={"query": query})
+            response = await http_client.get(f"{get_scraper_base()}/scrape", params={"query": query})
             response.raise_for_status()
             return response.json()
         except Exception as e:
@@ -559,7 +556,7 @@ async def check_scraper_reachable() -> bool:
     try:
         # Quick health check to scraper
         response = await asyncio.wait_for(
-            http_client.get(f"{SCRAPER_BASE_URL}/", timeout=3.0),
+            http_client.get(f"{get_scraper_base()}/", timeout=3.0),
             timeout=3.0
         )
         return response.status_code < 500
@@ -614,7 +611,7 @@ async def smoketest():
     try:
         # Quick scrape with limit=1 and short timeout
         response = await asyncio.wait_for(
-            http_client.get(f"{SCRAPER_BASE_URL}/scrape", params={"query": "test", "limit": 1}),
+            http_client.get(f"{get_scraper_base()}/scrape", params={"query": "test", "limit": 1}),
             timeout=6.0
         )
         
@@ -788,7 +785,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
             ef_body = ""
             external_ok = False
             
-            if SUPABASE_FUNCTION_URL and get_service_role_key():
+            if get_ef_url() and get_service_role_key():
                 print(f"[api] Step 3: Starting Edge Function call (trace: {trace_id})")
                 ef_start = time.time()
                 
@@ -1190,8 +1187,8 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     
     print(f"[api] Starting FastAPI server on port {port}")
-    print(f"[api] Scraper base URL: {'SET' if SCRAPER_BASE_URL else 'NOT SET'}")
-    print(f"[api] Supabase Function URL: {'SET' if SUPABASE_FUNCTION_URL else 'NOT SET'}")
+    print(f"[api] Scraper base URL: {'SET' if get_scraper_base() else 'NOT SET'}")
+    print(f"[api] Supabase Function URL: {'SET' if get_ef_url() else 'NOT SET'}")
     
     # Print deployment info
     railway_url = os.getenv("RAILWAY_PUBLIC_DOMAIN")
