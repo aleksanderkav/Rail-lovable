@@ -173,62 +173,40 @@ http_client = httpx.AsyncClient(
 app = FastAPI(title="Rail-lovable Scraper", version="1.0.0")
 
 # CORS Configuration
-ALLOWED_ORIGINS = [
+ALLOWED_ORIGINS = {
     "https://card-pulse-watch.lovable.app",
-    "https://ed*.lovableproject.com",   # wildcard handled manually below
-    "https://*.lovableproject.com",
-    "https://*.lovable.app",
+    "https://id-preview--ed2352f3-a196-4248-bcf1-3cf010ca8901.lovable.app",
+    "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",
     "http://localhost:3000",
     "http://localhost:5173",
-]
+}
 
-def is_allowed_origin(origin: str) -> bool:
-    """Check if origin is allowed with wildcard support"""
-    if not origin: 
+def is_allowed_origin(origin: str | None) -> bool:
+    if not origin:
         return False
     if origin in ALLOWED_ORIGINS:
         return True
-    # Simple wildcard checks
-    return (
-        origin.endswith(".lovable.app") or
-        origin.endswith(".lovableproject.com")
-    )
+    # also accept any lovable preview domains
+    return origin.endswith(".lovable.app") or origin.endswith(".lovableproject.com")
 
+# Global CORS middleware (keep methods/headers broad, we mirror specific origin below)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # We validate in our own dependency
-    allow_credentials=False,
+    allow_origins=["*"],  # we mirror the actual origin in a dependency
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Admin-Token", "x-function-secret"],
     expose_headers=["x-trace-id"],
+    allow_credentials=False,
 )
 
 # CORS Guard Dependency
 def cors_guard(origin: str = Header(None), response: Response = None):
-    """CORS guard that validates origin and sets appropriate headers"""
-    # Always allow preflight (OPTIONS handled automatically by CORS middleware)
-    # For actual calls: if origin exists and is not allowed, let route return controlled error but set CORS headers
-    
-    # Log origin and trace for monitoring
-    trace_id = str(uuid.uuid4())[:8]
-    print(f"[api] CORS guard: origin={origin}, trace={trace_id}")
-    
-    if origin and is_allowed_origin(origin):
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Vary"] = "Origin"
-        response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
-        print(f"[api] CORS: allowed origin {origin} (trace: {trace_id})")
-        return
-    
+    # Always vary on Origin so caches are safe
+    response.headers["Vary"] = "Origin"
+    response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
     if origin:
-        # Not allowed origin - let route return controlled error, but set CORS headers
+        # Mirror the requesting origin so the browser can read the response
         response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Vary"] = "Origin"
-        response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
-        print(f"[api] CORS: disallowed origin {origin} (trace: {trace_id})")
-    
-    # Without Origin (server-to-server) let it pass through
-    print(f"[api] CORS: no origin, server-to-server call (trace: {trace_id})")
 
 # --- Safe, lazy clients (don't create at import time) ---
 def get_scraper_base():
@@ -3017,6 +2995,12 @@ async def admin_diag_ef_options(response: Response):
     """CORS preflight for admin diag-ef endpoint"""
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type,X-Admin-Token"
+    return Response(status_code=200)
+
+@app.options("/admin/{rest_of_path:path}", dependencies=[Depends(cors_guard)])
+def admin_options(rest_of_path: str, response: Response):
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
     return Response(status_code=200)
 
 if __name__ == "__main__":
