@@ -34,6 +34,9 @@ def get_function_secret():
 def get_supabase_url():
     return os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 
+def get_admin_proxy_token():
+    return os.getenv("ADMIN_PROXY_TOKEN", "").strip()
+
 # Enhanced validation for Edge Function payload
 def validate_edge_function_payload(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Ensure each item has required fields for Edge Function"""
@@ -171,6 +174,7 @@ app = FastAPI(title="Rail-lovable Scraper", version="1.0.0")
 ALLOWED_ORIGINS = [
     "https://preview--card-pulse-watch.lovable.app",
     "https://card-pulse-watch.lovable.app",
+    "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",  # Additional preview origin
     "*",  # safe because allow_credentials=False
 ]
 
@@ -880,6 +884,138 @@ async def admin_merge_cards_options():
     # CORSMiddleware will add headers, but we ensure 200 with bodyless response
     from fastapi.responses import Response
     return Response(status_code=200)
+
+@app.options("/admin/logs")
+async def admin_logs_options():
+    """Handle CORS preflight for /admin/logs"""
+    # CORSMiddleware will add headers, but we ensure 200 with bodyless response
+    from fastapi.responses import Response
+    return Response(status_code=200)
+
+@app.options("/admin/tracked-queries")
+async def admin_tracked_queries_options():
+    """Handle CORS preflight for /admin/tracked-queries"""
+    # CORSMiddleware will add headers, but we ensure 200 with bodyless response
+    from fastapi.responses import Response
+    return Response(status_code=200)
+
+@app.get("/admin/logs")
+async def admin_logs(request: Request, limit: int = 200):
+    """Admin endpoint to read scraping_logs from Supabase"""
+    trace_id = str(uuid.uuid4())[:8]
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Verify admin token
+    admin_token = request.headers.get("X-Admin-Token")
+    expected_token = get_admin_proxy_token()
+    
+    if not admin_token or admin_token != expected_token:
+        print(f"[api] /admin/logs unauthorized access attempt from {client_ip} (trace: {trace_id})")
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    print(f"[api] /admin/logs called from {client_ip} (trace: {trace_id})")
+    
+    try:
+        # Call Supabase REST API with service role key
+        service_role_key = get_service_role_key()
+        supabase_url = get_supabase_url()
+        
+        if not service_role_key or not supabase_url:
+            raise HTTPException(status_code=500, detail="Service not configured")
+        
+        # Build Supabase REST API URL
+        rest_url = f"{supabase_url}/rest/v1/scraping_logs"
+        params = {
+            "select": "id,query,created_at,status,notes",
+            "order": "created_at.desc",
+            "limit": min(limit, 1000)  # Cap at 1000 for safety
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {service_role_key}",
+            "apikey": service_role_key,
+            "Content-Type": "application/json"
+        }
+        
+        print(f"[api] Calling Supabase REST: {rest_url} (trace: {trace_id})")
+        
+        response = await http_client.get(rest_url, headers=headers, params=params)
+        
+        if response.status_code == 200:
+            logs = response.json()
+            print(f"[api] Retrieved {len(logs)} logs (trace: {trace_id})")
+            return JSONResponse({
+                "ok": True,
+                "logs": logs,
+                "count": len(logs),
+                "trace": trace_id
+            })
+        else:
+            print(f"[api] Supabase REST error: {response.status_code} - {response.text} (trace: {trace_id})")
+            raise HTTPException(status_code=502, detail=f"Supabase error: {response.status_code}")
+        
+    except Exception as e:
+        print(f"[api] /admin/logs error: {e} (trace: {trace_id})")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/tracked-queries")
+async def admin_tracked_queries(request: Request, limit: int = 200):
+    """Admin endpoint to read tracked_queries from Supabase"""
+    trace_id = str(uuid.uuid4())[:8]
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Verify admin token
+    admin_token = request.headers.get("X-Admin-Token")
+    expected_token = get_admin_proxy_token()
+    
+    if not admin_token or admin_token != expected_token:
+        print(f"[api] /admin/tracked_queries unauthorized access attempt from {client_ip} (trace: {trace_id})")
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    print(f"[api] /admin/tracked-queries called from {client_ip} (trace: {trace_id})")
+    
+    try:
+        # Call Supabase REST API with service role key
+        service_role_key = get_service_role_key()
+        supabase_url = get_supabase_url()
+        
+        if not service_role_key or not supabase_url:
+            raise HTTPException(status_code=500, detail="Service not configured")
+        
+        # Build Supabase REST API URL
+        rest_url = f"{supabase_url}/rest/v1/tracked_queries"
+        params = {
+            "select": "id,query,is_active,created_at,last_run_at,source",
+            "order": "created_at.desc",
+            "limit": min(limit, 1000)  # Cap at 1000 for safety
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {service_role_key}",
+            "apikey": service_role_key,
+            "Content-Type": "application/json"
+        }
+        
+        print(f"[api] Calling Supabase REST: {rest_url} (trace: {trace_id})")
+        
+        response = await http_client.get(rest_url, headers=headers, params=params)
+        
+        if response.status_code == 200:
+            queries = response.json()
+            print(f"[api] Retrieved {len(queries)} tracked queries (trace: {trace_id})")
+            return JSONResponse({
+                "ok": True,
+                "queries": queries,
+                "count": len(queries),
+                "trace": trace_id
+            })
+        else:
+            print(f"[api] Supabase REST error: {response.status_code} - {response.text} (trace: {trace_id})")
+            raise HTTPException(status_code=502, detail=f"Supabase error: {response.status_code}")
+        
+    except Exception as e:
+        print(f"[api] /admin/tracked-queries error: {e} (trace: {trace_id})")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Removed duplicate endpoint - CORS is handled by CORSMiddleware
 
