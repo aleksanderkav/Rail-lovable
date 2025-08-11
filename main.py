@@ -862,10 +862,17 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                     print(f"[api] Posting to EF: items={len(ef_payload['items'])}, query_present={query is not None}")
                     print(f"[api] First item title: {ef_payload['items'][0].get('title', 'NO_TITLE') if ef_payload['items'] else 'NO_ITEMS'}")
                     
+                    # Log BEFORE Edge Function call
+                    first_item = ef_payload['items'][0] if ef_payload['items'] else {}
+                    print(f"[api] EF call: count={len(ef_payload['items'])}, hasQuery={query is not None}, firstItemKeys={list(first_item.keys())}")
+                    
                     ef_status, ef_body = await asyncio.wait_for(
                         post_to_edge_function(ef_payload),
                         timeout=EF_TIMEOUT
                     )
+                    
+                    # Log AFTER Edge Function call
+                    print(f"[api] EF result: status={ef_status}, body={ef_body[:200] if ef_body else '<no-body>'}")
                     ef_time = time.time() - ef_start
                     
                     # Truncate body for logging (max 300 chars)
@@ -898,7 +905,8 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                 "items": [item.dict() for item in normalized_data.items],
                 "externalOk": external_ok,
                 "efStatus": ef_status,
-                "efBody": ef_body
+                "efBody": ef_body,
+                "trace": trace_id
             }
             
             print(f"[api] scrape-now q=\"{query}\" items={len(normalized_data.items)} dur={total_time:.1f}s (trace: {trace_id})")
