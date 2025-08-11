@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import random
+import re
 
 # Import the existing scraper functions - only import functions, not environment variables
 # from scheduled_scraper import now_iso
@@ -344,74 +345,37 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
     """Normalize scraper response into expected format with enriched fields"""
     items = []
     
-    # Debug logging to see what we're working with
-    print(f"[api] Normalizing scraper data: keys={list(scraper_data.keys())}")
-    if "items" in scraper_data and scraper_data["items"]:
-        first_item = scraper_data["items"][0]
-        print(f"[api] First item keys: {list(first_item.keys())}")
-        print(f"[api] First item sample: {dict(list(first_item.items())[:5])}")
-    
     # Helper function to extract URL and listing ID from various field names
     def extract_url_and_id(item: Dict[str, Any]) -> tuple[str, str]:
         """Extract URL and source_listing_id from item data"""
-        # Debug logging for this specific item
-        print(f"[api] Extracting URL/ID from item with keys: {list(item.keys())}")
-        
-        # Try various URL field names (eBay API, HTML scraping, etc.)
+        # Extract URL from first non-empty of: ["url","href","itemWebUrl","viewItemURL","link"]
         url = None
-        if "itemWebUrl" in item:
-            url = item["itemWebUrl"]
-            print(f"[api] Found URL in itemWebUrl: {url}")
-        elif "viewItemURL" in item:
-            url = item["viewItemURL"]
-            print(f"[api] Found URL in viewItemURL: {url}")
-        elif "url" in item:
-            url = item["url"]
-            print(f"[api] Found URL in url: {url}")
-        elif "link" in item:
-            url = item["link"]
-            print(f"[api] Found URL in link: {url}")
-        elif "href" in item:
-            url = item["href"]
-            print(f"[api] Found URL in href: {url}")
-        else:
-            print(f"[api] No URL field found in item")
+        for url_field in ["url", "href", "itemWebUrl", "viewItemURL", "link"]:
+            if url_field in item and item[url_field]:
+                url = str(item[url_field]).strip()
+                if url:
+                    break
         
-        # Try various ID field names
+        # Extract source_listing_id from first non-empty of: ["source_listing_id","itemId","id","listing_id","ebay_id"]
         source_listing_id = None
-        if "itemId" in item:
-            source_listing_id = str(item["itemId"])
-            print(f"[api] Found ID in itemId: {source_listing_id}")
-        elif "id" in item:
-            source_listing_id = str(item["id"])
-            print(f"[api] Found ID in id: {source_listing_id}")
-        elif "listing_id" in item:
-            source_listing_id = str(item["listing_id"])
-            print(f"[api] Found ID in listing_id: {source_listing_id}")
-        elif "ebay_id" in item:
-            source_listing_id = str(item["ebay_id"])
-            print(f"[api] Found ID in ebay_id: {source_listing_id}")
-        else:
-            print(f"[api] No ID field found in item")
+        for id_field in ["source_listing_id", "itemId", "id", "listing_id", "ebay_id"]:
+            if id_field in item and item[id_field]:
+                source_listing_id = str(item[id_field]).strip()
+                if source_listing_id:
+                    break
         
-        # If we have a URL but no ID, try to extract ID from URL
+        # If no ID but URL looks like an eBay item, parse with regex
         if url and not source_listing_id:
-            print(f"[api] Extracting ID from URL: {url}")
-            # Common eBay URL patterns
-            if "ebay.com/itm/" in url:
-                # Extract ID from https://www.ebay.com/itm/123456789012
-                parts = url.split("/itm/")
-                if len(parts) > 1:
-                    source_listing_id = parts[1].split("?")[0].split("#")[0]
-                    print(f"[api] Extracted ID from eBay URL: {source_listing_id}")
-            elif "ebay.com/p/" in url:
-                # Extract ID from https://www.ebay.com/p/123456789012
-                parts = url.split("/p/")
-                if len(parts) > 1:
-                    source_listing_id = parts[1].split("?")[0].split("#")[0]
-                    print(f"[api] Extracted ID from eBay URL: {source_listing_id}")
+            # Try /itm/ pattern first (most common)
+            itm_match = re.search(r"/itm/(\d{6,})", url)
+            if itm_match:
+                source_listing_id = itm_match.group(1)
+            else:
+                # Try /p/ pattern
+                p_match = re.search(r"/p/(\d{6,})", url)
+                if p_match:
+                    source_listing_id = p_match.group(1)
         
-        print(f"[api] Final extraction result: url={url}, source_listing_id={source_listing_id}")
         return url, source_listing_id
     
     # Handle different response formats
@@ -434,7 +398,6 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                 
                 # Parse title for hints
                 title = item.get("title", "")
-                # parsed_hints = safe_parse_title(title) if title else None
                 
                 # Calculate total price
                 price = item.get("price")
@@ -462,19 +425,19 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     images=[item.get("image_url")] if item.get("image_url") else None,
                     
                     # Initial parsed fields (if easily extractable during scraping)
-                    franchise=None, # parsed_hints.franchise if parsed_hints else None,
-                    set_name=None, # parsed_hints.set_name if parsed_hints else None,
-                    edition=None, # parsed_hints.edition if parsed_hints else None,
-                    number=None, # parsed_hints.number if parsed_hints else None,
-                    year=None, # parsed_hints.year if parsed_hints else None,
-                    language=None, # parsed_hints.language if parsed_hints else None,
-                    grading_company=None, # parsed_hints.grading_company if parsed_hints else None,
-                    grade=None, # parsed_hints.grade if parsed_hints else None,
-                    rarity=None, # parsed_hints.rarity if parsed_hints else None,
-                    is_holo=None, # parsed_hints.is_holo if parsed_hints else None,
+                    franchise=None,
+                    set_name=None,
+                    edition=None,
+                    number=None,
+                    year=None,
+                    language=None,
+                    grading_company=None,
+                    grade=None,
+                    rarity=None,
+                    is_holo=None,
                     
                     # Tags (pre-filled if certain)
-                    tags=None, # parsed_hints.tags if parsed_hints else None,
+                    tags=None,
                     
                     # Metadata for enrichment
                     raw_query=scraper_data.get("query"),
@@ -495,14 +458,13 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     grade_value=item.get("grade_value"),
                     
                     # Parsed hints subobject
-                    parsed=None # asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
+                    parsed=None
                 ))
     elif "price_entries" in scraper_data and isinstance(scraper_data["price_entries"], list):
         # Convert price entries to items
         for entry in scraper_data["price_entries"]:
             if isinstance(entry, dict):
                 title = scraper_data.get("query", "")
-                # parsed_hints = safe_parse_title(title) if title else None
                 
                 # Extract URL and ID from price entry if available
                 url, source_listing_id = extract_url_and_id(entry)
@@ -524,19 +486,19 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     images=None,
                     
                     # Initial parsed fields (if easily extractable during scraping)
-                    franchise=None, # parsed_hints.franchise if parsed_hints else None,
-                    set_name=None, # parsed_hints.set_name if parsed_hints else None,
-                    edition=None, # parsed_hints.edition if parsed_hints else None,
-                    number=None, # parsed_hints.number if parsed_hints else None,
-                    year=None, # parsed_hints.year if parsed_hints else None,
-                    language=None, # parsed_hints.language if parsed_hints else None,
-                    grading_company=None, # parsed_hints.grading_company if parsed_hints else None,
-                    grade=None, # parsed_hints.grade if parsed_hints else None,
-                    rarity=None, # parsed_hints.rarity if parsed_hints else None,
-                    is_holo=None, # parsed_hints.is_holo if parsed_hints else None,
+                    franchise=None,
+                    set_name=None,
+                    edition=None,
+                    number=None,
+                    year=None,
+                    language=None,
+                    grading_company=None,
+                    grade=None,
+                    rarity=None,
+                    is_holo=None,
                     
                     # Tags (pre-filled if certain)
-                    tags=None, # parsed_hints.tags if parsed_hints else None,
+                    tags=None,
                     
                     # Metadata for enrichment
                     raw_query=scraper_data.get("query"),
@@ -544,8 +506,8 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     
                     # Legacy fields for backward compatibility
                     title=title,
-                    id=source_listing_id,  # Use extracted source_listing_id
-                    sold=False,  # Price entries are typically active listings
+                    id=source_listing_id,
+                    sold=False,
                     image_url=None,
                     shipping_price=None,
                     total_price=entry.get("price"),
@@ -557,15 +519,14 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     grade_value=None,
                     
                     # Parsed hints subobject
-                    parsed=None # asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
+                    parsed=None
                 ))
     elif "prices" in scraper_data and isinstance(scraper_data["prices"], list):
         # Convert prices array to items
         for price in scraper_data["prices"]:
             if isinstance(price, (int, float)):
                 title = scraper_data.get("query", "")
-                # parsed_hints = safe_parse_title(title) if title else None
-                
+                # For simple price arrays, URL/ID might not be directly available, keep as None
                 items.append(Item(
                     # Raw listing details (for AI extraction)
                     raw_title=title,
@@ -583,19 +544,19 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     images=None,
                     
                     # Initial parsed fields (if easily extractable during scraping)
-                    franchise=None, # parsed_hints.franchise if parsed_hints else None,
-                    set_name=None, # parsed_hints.set_name if parsed_hints else None,
-                    edition=None, # parsed_hints.edition if parsed_hints else None,
-                    number=None, # parsed_hints.number if parsed_hints else None,
-                    year=None, # parsed_hints.year if parsed_hints else None,
-                    language=None, # parsed_hints.language if parsed_hints else None,
-                    grading_company=None, # parsed_hints.grading_company if parsed_hints else None,
-                    grade=None, # parsed_hints.grade if parsed_hints else None,
-                    rarity=None, # parsed_hints.rarity if parsed_hints else None,
-                    is_holo=None, # parsed_hints.is_holo if parsed_hints else None,
+                    franchise=None,
+                    set_name=None,
+                    edition=None,
+                    number=None,
+                    year=None,
+                    language=None,
+                    grading_company=None,
+                    grade=None,
+                    rarity=None,
+                    is_holo=None,
                     
                     # Tags (pre-filled if certain)
-                    tags=None, # parsed_hints.tags if parsed_hints else None,
+                    tags=None,
                     
                     # Metadata for enrichment
                     raw_query=scraper_data.get("query"),
@@ -604,7 +565,7 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     # Legacy fields for backward compatibility
                     title=title,
                     id=None,
-                    sold=False,  # Price entries are typically active listings
+                    sold=False,
                     image_url=None,
                     shipping_price=None,
                     total_price=float(price),
@@ -616,14 +577,12 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     grade_value=None,
                     
                     # Parsed hints subobject
-                    parsed=None # asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
+                    parsed=None
                 ))
     
     # If no items found, create a default item with query info
     if not items:
         title = scraper_data.get("query", "")
-        # parsed_hints = safe_parse_title(title) if title else None
-        
         items.append(Item(
             # Raw listing details (for AI extraction)
             raw_title=title,
@@ -631,39 +590,41 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
             source="ebay",
             source_listing_id=None,  # No ID available for default items
             url=None,  # No URL available for default items
+            
+            # Pricing and availability
             currency="USD",
-            price=scraper_data.get("average"),
+            price=None,
             ended_at=None,
             
             # Media
             images=None,
             
             # Initial parsed fields (if easily extractable during scraping)
-            franchise=None, # parsed_hints.franchise if parsed_hints else None,
-            set_name=None, # parsed_hints.set_name if parsed_hints else None,
-            edition=None, # parsed_hints.edition if parsed_hints else None,
-            number=None, # parsed_hints.number if parsed_hints else None,
-            year=None, # parsed_hints.year if parsed_hints else None,
-            language=None, # parsed_hints.language if parsed_hints else None,
-            grading_company=None, # parsed_hints.grading_company if parsed_hints else None,
-            grade=None, # parsed_hints.grade if parsed_hints else None,
-            rarity=None, # parsed_hints.rarity if parsed_hints else None,
-            is_holo=None, # parsed_hints.is_holo if parsed_hints else None,
+            franchise=None,
+            set_name=None,
+            edition=None,
+            number=None,
+            year=None,
+            language=None,
+            grading_company=None,
+            grade=None,
+            rarity=None,
+            is_holo=None,
             
             # Tags (pre-filled if certain)
-            tags=None, # parsed_hints.tags if parsed_hints else None,
+            tags=None,
             
             # Metadata for enrichment
-            raw_query=scraper_data.get("query"),
+            raw_query=title,
             category_guess=None,
             
             # Legacy fields for backward compatibility
             title=title,
             id=None,
-            sold=False,  # Default item is typically active
+            sold=False,
             image_url=None,
             shipping_price=None,
-            total_price=scraper_data.get("average"),
+            total_price=None,
             bids=None,
             condition=None,
             canonical_key=None,
@@ -672,7 +633,7 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
             grade_value=None,
             
             # Parsed hints subobject
-            parsed=None # asdict(parsed_hints) if is_dataclass(parsed_hints) else (parsed_hints or {})
+            parsed=None
         ))
     
     return NormalizedResponse(items=items)
@@ -864,18 +825,32 @@ async def health():
     try:
         supabase_url = get_supabase_url()
         ef_url = f"{supabase_url}/functions/v1/ai-parser" if supabase_url else "NOT SET"
+        ef_configured = bool(get_ef_url() and get_service_role_key())
     except Exception:
         ef_url = "ERROR"
+        ef_configured = False
+    
+    # Get git version if available
+    git_version = "unknown"
+    try:
+        import subprocess
+        result = subprocess.run(["git", "rev-parse", "--short", "HEAD"], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            git_version = result.stdout.strip()
+    except Exception:
+        pass
     
     return JSONResponse({
         "ok": True,
         "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "version": git_version,
+        "ef": ef_configured,
         "env": {
             "scraper": bool(get_scraper_base()),
-            "ef": bool(get_ef_url()),
-            "ef_auth": bool(get_service_role_key()),
-            "ef_url": ef_url,
-        },
+            "supabase": bool(supabase_url),
+            "ef_url": ef_url
+        }
     })
 
 @app.get("/diag-ef")
@@ -890,16 +865,17 @@ async def diag_ef(ping: Optional[str] = None):
     try:
         # Test payload - match the format expected by the Edge Function
         test_items = [{
-            "title": "test item",  # Edge Function expects this field
-            "raw_title": "test item",
+            "title": "diag",
+            "source": "ebay",
+            "url": "https://www.ebay.com/itm/123456789012",
+            "source_listing_id": "123456789012",
             "price": 1.0,
             "currency": "USD",
-            "source": "ebay",
-            "raw_description": "test description"
+            "sold": False
         }]
         validated_items = validate_edge_function_payload(test_items)
         test_payload = {
-            "query": "diagnostic",
+            "query": "diag",
             "items": validated_items
         }
         
@@ -1081,21 +1057,26 @@ async def admin_diag_supabase_options():
 
 @app.get("/admin/logs")
 async def admin_logs(request: Request, limit: int = 200):
-    """Admin endpoint to read scraping_logs from Supabase"""
+    """Admin endpoint to proxy logs requests to Supabase REST API"""
     trace_id = str(uuid.uuid4())[:8]
     client_ip = request.client.host if request.client else "unknown"
     
-    # Verify admin token
+    # Check admin token
     admin_token = request.headers.get("X-Admin-Token")
     expected_token = get_admin_proxy_token()
     
     if not admin_token or admin_token != expected_token:
-        print(f"[api] /admin/logs unauthorized access attempt from {client_ip} (trace: {trace_id})")
         return JSONResponse(
             content={"logs": [], "error": "Unauthorized", "trace": trace_id},
-            headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
-            status_code=401
+            status_code=401,
+            headers={"x-trace-id": trace_id}
         )
+    
+    # Validate limit parameter
+    if limit > 1000:
+        limit = 1000
+    elif limit < 1:
+        limit = 1
     
     print(f"[api] /admin/logs called from {client_ip} (trace: {trace_id})")
     
@@ -1133,8 +1114,15 @@ async def admin_logs(request: Request, limit: int = 200):
             logs = response.json()
             print(f"[api] Retrieved {len(logs)} logs (trace: {trace_id})")
             return JSONResponse(
-                content={"logs": logs, "count": len(logs), "trace": trace_id},
-                headers={"x-trace-id": trace_id, "Content-Type": "application/json"}
+                content={
+                    "logs": logs,
+                    "count": len(logs),
+                    "trace": trace_id
+                },
+                headers={
+                    "x-trace-id": trace_id,
+                    "Content-Type": "application/json"
+                }
             )
         else:
             # Return empty array with error details
@@ -1147,35 +1135,51 @@ async def admin_logs(request: Request, limit: int = 200):
                     "sb_request_id": sb_request_id,
                     "trace": trace_id
                 },
-                headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+                headers={
+                    "x-trace-id": trace_id,
+                    "Content-Type": "application/json"
+                },
                 status_code=200  # Always 200 to prevent UI crashes
             )
         
     except Exception as e:
         print(f"[api] /admin/logs error: {e} (trace: {trace_id})")
         return JSONResponse(
-            content={"logs": [], "error": str(e), "trace": trace_id},
-            headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+            content={
+                "logs": [],
+                "error": str(e),
+                "sb_request_id": "unknown",
+                "trace": trace_id
+            },
+            headers={
+                "x-trace-id": trace_id,
+                "Content-Type": "application/json"
+            },
             status_code=200  # Always 200 to prevent UI crashes
         )
 
 @app.get("/admin/tracked-queries")
 async def admin_tracked_queries(request: Request, limit: int = 200):
-    """Admin endpoint to read tracked_queries from Supabase"""
+    """Admin endpoint to proxy tracked-queries requests to Supabase REST API"""
     trace_id = str(uuid.uuid4())[:8]
     client_ip = request.client.host if request.client else "unknown"
     
-    # Verify admin token
+    # Check admin token
     admin_token = request.headers.get("X-Admin-Token")
     expected_token = get_admin_proxy_token()
     
     if not admin_token or admin_token != expected_token:
-        print(f"[api] /admin/tracked-queries unauthorized access attempt from {client_ip} (trace: {trace_id})")
         return JSONResponse(
             content={"queries": [], "error": "Unauthorized", "trace": trace_id},
-            headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
-            status_code=401
+            status_code=401,
+            headers={"x-trace-id": trace_id}
         )
+    
+    # Validate limit parameter
+    if limit > 1000:
+        limit = 1000
+    elif limit < 1:
+        limit = 1
     
     print(f"[api] /admin/tracked-queries called from {client_ip} (trace: {trace_id})")
     
@@ -1213,8 +1217,15 @@ async def admin_tracked_queries(request: Request, limit: int = 200):
             queries = response.json()
             print(f"[api] Retrieved {len(queries)} tracked queries (trace: {trace_id})")
             return JSONResponse(
-                content={"queries": queries, "count": len(queries), "trace": trace_id},
-                headers={"x-trace-id": trace_id, "Content-Type": "application/json"}
+                content={
+                    "queries": queries,
+                    "count": len(queries),
+                    "trace": trace_id
+                },
+                headers={
+                    "x-trace-id": trace_id,
+                    "Content-Type": "application/json"
+                }
             )
         else:
             # Return empty array with error details
@@ -1227,15 +1238,26 @@ async def admin_tracked_queries(request: Request, limit: int = 200):
                     "sb_request_id": sb_request_id,
                     "trace": trace_id
                 },
-                headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+                headers={
+                    "x-trace-id": trace_id,
+                    "Content-Type": "application/json"
+                },
                 status_code=200  # Always 200 to prevent UI crashes
             )
         
     except Exception as e:
         print(f"[api] /admin/tracked-queries error: {e} (trace: {trace_id})")
         return JSONResponse(
-            content={"queries": [], "error": str(e), "trace": trace_id},
-            headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+            content={
+                "queries": [],
+                "error": str(e),
+                "sb_request_id": "unknown",
+                "trace": trace_id
+            },
+            headers={
+                "x-trace-id": trace_id,
+                "Content-Type": "application/json"
+            },
             status_code=200  # Always 200 to prevent UI crashes
         )
 
@@ -1303,8 +1325,16 @@ async def admin_diag_supabase(request: Request):
     except Exception as e:
         print(f"[api] /admin/diag-supabase error: {e} (trace: {trace_id})")
         return JSONResponse(
-            content={"ok": False, "error": str(e), "trace": trace_id},
-            headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+            content={
+                "ok": False,
+                "error": str(e),
+                "sb_request_id": "unknown",
+                "trace": trace_id
+            },
+            headers={
+                "x-trace-id": trace_id,
+                "Content-Type": "application/json"
+            },
             status_code=200  # Always 200 to prevent UI crashes
         )
 
@@ -1434,7 +1464,11 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                     # Filter items to only those with title AND (url OR source_listing_id)
                     filtered_items = []
                     for item in validated_items:
-                        if item.get("title") and (item.get("url") or item.get("source_listing_id")):
+                        has_title = bool(item.get("title"))
+                        has_url = bool(item.get("url"))
+                        has_id = bool(item.get("source_listing_id"))
+                        
+                        if has_title and (has_url or has_id):
                             filtered_items.append(item)
                     
                     ef_payload = {
@@ -1442,11 +1476,13 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                         "items": filtered_items
                     }
                     
-                    # Log filtering results
+                    # Log filtering results with comprehensive stats
                     total_items = len(validated_items)
                     with_url = len([item for item in validated_items if item.get("url")])
                     with_id = len([item for item in validated_items if item.get("source_listing_id")])
-                    print(f"[api] EF ready: total={total_items}, with_url={with_url}, with_id={with_id}")
+                    accepted = len(filtered_items)
+                    
+                    print(f"[api] EF ready: total={total_items}, with_url={with_url}, with_id={with_id}, accepted={accepted} (trace={trace_id})")
                     
                     # If no items pass filter, skip EF call
                     if len(filtered_items) == 0:
@@ -1977,6 +2013,92 @@ async def ingest_items(request: IngestItemsRequest, http_request: Request):
                 "Access-Control-Allow-Headers": "*"
             }
         )
+
+@app.get("/admin/diag-db")
+async def admin_diag_db(request: Request):
+    """Quick diagnostics endpoint to test Supabase REST API connectivity"""
+    trace_id = str(uuid.uuid4())[:8]
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Check admin token
+    admin_token = request.headers.get("X-Admin-Token")
+    expected_token = get_admin_proxy_token()
+    
+    if not admin_token or admin_token != expected_token:
+        return JSONResponse(
+            content={"ok": False, "error": "Unauthorized", "trace": trace_id},
+            status_code=401,
+            headers={"x-trace-id": trace_id}
+        )
+    
+    print(f"[api] /admin/diag-db called from {client_ip} (trace: {trace_id})")
+    
+    try:
+        # Call Supabase REST API with minimal query
+        service_role_key = get_service_role_key()
+        supabase_url = get_supabase_url()
+        
+        if not service_role_key or not supabase_url:
+            return JSONResponse(
+                content={"ok": False, "error": "Service not configured", "trace": trace_id},
+                headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+                status_code=200  # Always 200 to prevent UI crashes
+            )
+        
+        # Test with minimal query
+        rest_url = f"{supabase_url}/rest/v1/tracked_queries"
+        params = {"select": "id", "limit": "1"}
+        
+        headers = {
+            "Authorization": f"Bearer {service_role_key}",
+            "apikey": service_role_key,
+            "Content-Type": "application/json"
+        }
+        
+        print(f"[api] Testing Supabase REST: {rest_url} (trace: {trace_id})")
+        
+        response = await http_client.get(rest_url, headers=headers, params=params)
+        
+        # Return detailed response information
+        return JSONResponse(
+            content={
+                "ok": response.status_code < 400,
+                "count": len(response.json()) if response.status_code < 400 else 0,
+                "status": response.status_code,
+                "sb_request_id": response.headers.get("sb-request-id", "unknown"),
+                "trace": trace_id
+            },
+            headers={"x-trace-id": trace_id, "Content-Type": "application/json"}
+        )
+        
+    except Exception as e:
+        print(f"[api] /admin/diag-db error: {e} (trace: {trace_id})")
+        return JSONResponse(
+            content={
+                "ok": False,
+                "error": str(e),
+                "sb_request_id": "unknown",
+                "trace": trace_id
+            },
+            headers={
+                "x-trace-id": trace_id,
+                "Content-Type": "application/json"
+            },
+            status_code=200  # Always 200 to prevent UI crashes
+        )
+
+@app.options("/admin/diag-db")
+async def admin_diag_db_options():
+    """CORS preflight for admin diag-db endpoint"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",
+            "Access-Control-Allow-Methods": "GET,OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type,X-Admin-Token",
+            "Access-Control-Max-Age": "86400"
+        }
+    )
 
 if __name__ == "__main__":
     # Get port from environment (Railway sets PORT)
