@@ -344,47 +344,74 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
     """Normalize scraper response into expected format with enriched fields"""
     items = []
     
+    # Debug logging to see what we're working with
+    print(f"[api] Normalizing scraper data: keys={list(scraper_data.keys())}")
+    if "items" in scraper_data and scraper_data["items"]:
+        first_item = scraper_data["items"][0]
+        print(f"[api] First item keys: {list(first_item.keys())}")
+        print(f"[api] First item sample: {dict(list(first_item.items())[:5])}")
+    
     # Helper function to extract URL and listing ID from various field names
     def extract_url_and_id(item: Dict[str, Any]) -> tuple[str, str]:
         """Extract URL and source_listing_id from item data"""
+        # Debug logging for this specific item
+        print(f"[api] Extracting URL/ID from item with keys: {list(item.keys())}")
+        
         # Try various URL field names (eBay API, HTML scraping, etc.)
         url = None
         if "itemWebUrl" in item:
             url = item["itemWebUrl"]
+            print(f"[api] Found URL in itemWebUrl: {url}")
         elif "viewItemURL" in item:
             url = item["viewItemURL"]
+            print(f"[api] Found URL in viewItemURL: {url}")
         elif "url" in item:
             url = item["url"]
+            print(f"[api] Found URL in url: {url}")
         elif "link" in item:
             url = item["link"]
+            print(f"[api] Found URL in link: {url}")
         elif "href" in item:
             url = item["href"]
+            print(f"[api] Found URL in href: {url}")
+        else:
+            print(f"[api] No URL field found in item")
         
         # Try various ID field names
         source_listing_id = None
         if "itemId" in item:
             source_listing_id = str(item["itemId"])
+            print(f"[api] Found ID in itemId: {source_listing_id}")
         elif "id" in item:
             source_listing_id = str(item["id"])
+            print(f"[api] Found ID in id: {source_listing_id}")
         elif "listing_id" in item:
             source_listing_id = str(item["listing_id"])
+            print(f"[api] Found ID in listing_id: {source_listing_id}")
         elif "ebay_id" in item:
             source_listing_id = str(item["ebay_id"])
+            print(f"[api] Found ID in ebay_id: {source_listing_id}")
+        else:
+            print(f"[api] No ID field found in item")
         
         # If we have a URL but no ID, try to extract ID from URL
         if url and not source_listing_id:
+            print(f"[api] Extracting ID from URL: {url}")
             # Common eBay URL patterns
             if "ebay.com/itm/" in url:
                 # Extract ID from https://www.ebay.com/itm/123456789012
                 parts = url.split("/itm/")
                 if len(parts) > 1:
                     source_listing_id = parts[1].split("?")[0].split("#")[0]
+                    print(f"[api] Extracted ID from eBay URL: {source_listing_id}")
             elif "ebay.com/p/" in url:
                 # Extract ID from https://www.ebay.com/p/123456789012
                 parts = url.split("/p/")
                 if len(parts) > 1:
                     source_listing_id = parts[1].split("?")[0].split("#")[0]
+                    print(f"[api] Extracted ID from eBay URL: {source_listing_id}")
         
+        print(f"[api] Final extraction result: url={url}, source_listing_id={source_listing_id}")
         return url, source_listing_id
     
     # Handle different response formats
