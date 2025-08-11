@@ -800,11 +800,14 @@ async def admin_merge_cards(request: Request):
         
     except Exception as e:
         print(f"[api] /admin/merge-cards error: {e} (trace: {trace_id})")
-        return JSONResponse({
-            "ok": False,
-            "error": str(e),
-            "trace_id": trace_id
-        }, status_code=500)
+        return JSONResponse(
+            content={
+                "ok": False,
+                "error": str(e),
+                "trace_id": trace_id
+            },
+            status_code=500
+        )
 
 @app.post("/smoketest")
 async def smoketest():
@@ -899,6 +902,13 @@ async def admin_tracked_queries_options():
     from fastapi.responses import Response
     return Response(status_code=200)
 
+@app.options("/admin/diag-supabase")
+async def admin_diag_supabase_options():
+    """Handle CORS preflight for /admin/diag-supabase"""
+    # CORSMiddleware will add headers, but we ensure 200 with bodyless response
+    from fastapi.responses import Response
+    return Response(status_code=200)
+
 @app.get("/admin/logs")
 async def admin_logs(request: Request, limit: int = 200):
     """Admin endpoint to read scraping_logs from Supabase"""
@@ -923,11 +933,11 @@ async def admin_logs(request: Request, limit: int = 200):
         if not service_role_key or not supabase_url:
             raise HTTPException(status_code=500, detail="Service not configured")
         
-        # Build Supabase REST API URL
+        # Build Supabase REST API URL with safe SELECT and valid order field
         rest_url = f"{supabase_url}/rest/v1/scraping_logs"
         params = {
-            "select": "id,query,created_at,status,notes",
-            "order": "created_at.desc",
+            "select": "*",
+            "order": "started_at.desc",
             "limit": min(limit, 1000)  # Cap at 1000 for safety
         }
         
@@ -951,8 +961,16 @@ async def admin_logs(request: Request, limit: int = 200):
                 "trace": trace_id
             })
         else:
-            print(f"[api] Supabase REST error: {response.status_code} - {response.text} (trace: {trace_id})")
-            raise HTTPException(status_code=502, detail=f"Supabase error: {response.status_code}")
+            # Return original Supabase error with request ID
+            sb_request_id = response.headers.get("sb-request-id", "unknown")
+            print(f"[api] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
+            return JSONResponse({
+                "ok": False,
+                "error": f"Supabase REST error: {response.status_code}",
+                "sb_request_id": sb_request_id,
+                "original_response": response.text,
+                "trace": trace_id
+            }, status_code=502)
         
     except Exception as e:
         print(f"[api] /admin/logs error: {e} (trace: {trace_id})")
@@ -969,7 +987,7 @@ async def admin_tracked_queries(request: Request, limit: int = 200):
     expected_token = get_admin_proxy_token()
     
     if not admin_token or admin_token != expected_token:
-        print(f"[api] /admin/tracked_queries unauthorized access attempt from {client_ip} (trace: {trace_id})")
+        print(f"[api] /admin/tracked-queries unauthorized access attempt from {client_ip} (trace: {trace_id})")
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     print(f"[api] /admin/tracked-queries called from {client_ip} (trace: {trace_id})")
@@ -982,10 +1000,10 @@ async def admin_tracked_queries(request: Request, limit: int = 200):
         if not service_role_key or not supabase_url:
             raise HTTPException(status_code=500, detail="Service not configured")
         
-        # Build Supabase REST API URL
+        # Build Supabase REST API URL with safe SELECT and valid order field
         rest_url = f"{supabase_url}/rest/v1/tracked_queries"
         params = {
-            "select": "id,query,is_active,created_at,last_run_at,source",
+            "select": "*",
             "order": "created_at.desc",
             "limit": min(limit, 1000)  # Cap at 1000 for safety
         }
@@ -1010,14 +1028,78 @@ async def admin_tracked_queries(request: Request, limit: int = 200):
                 "trace": trace_id
             })
         else:
-            print(f"[api] Supabase REST error: {response.status_code} - {response.text} (trace: {trace_id})")
-            raise HTTPException(status_code=502, detail=f"Supabase error: {response.status_code}")
+            # Return original Supabase error with request ID
+            sb_request_id = response.headers.get("sb-request-id", "unknown")
+            print(f"[api] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
+            return JSONResponse({
+                "ok": False,
+                "error": f"Supabase REST error: {response.status_code}",
+                "sb_request_id": sb_request_id,
+                "original_response": response.text,
+                "trace": trace_id
+            }, status_code=502)
         
     except Exception as e:
         print(f"[api] /admin/tracked-queries error: {e} (trace: {trace_id})")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Removed duplicate endpoint - CORS is handled by CORSMiddleware
+
+@app.get("/admin/diag-supabase")
+async def admin_diag_supabase(request: Request):
+    """Quick diagnostics endpoint to test Supabase REST API connectivity"""
+    trace_id = str(uuid.uuid4())[:8]
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Verify admin token
+    admin_token = request.headers.get("X-Admin-Token")
+    expected_token = get_admin_proxy_token()
+    
+    if not admin_token or admin_token != expected_token:
+        print(f"[api] /admin/diag-supabase unauthorized access attempt from {client_ip} (trace: {trace_id})")
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    print(f"[api] /admin/diag-supabase called from {client_ip} (trace: {trace_id})")
+    
+    try:
+        # Call Supabase REST API with minimal query
+        service_role_key = get_service_role_key()
+        supabase_url = get_supabase_url()
+        
+        if not service_role_key or not supabase_url:
+            raise HTTPException(status_code=500, detail="Service not configured")
+        
+        # Test with minimal query
+        rest_url = f"{supabase_url}/rest/v1/scraping_logs"
+        params = {"select": "1", "limit": "1"}
+        
+        headers = {
+            "Authorization": f"Bearer {service_role_key}",
+            "apikey": service_role_key,
+            "Content-Type": "application/json"
+        }
+        
+        print(f"[api] Testing Supabase REST: {rest_url} (trace: {trace_id})")
+        
+        response = await http_client.get(rest_url, headers=headers, params=params)
+        
+        # Return detailed response information
+        return JSONResponse({
+            "ok": response.status_code < 400,
+            "status": response.status_code,
+            "sb_request_id": response.headers.get("sb-request-id", "unknown"),
+            "response_headers": dict(response.headers),
+            "body": response.text[:500],  # Truncate long responses
+            "trace": trace_id
+        })
+        
+    except Exception as e:
+        print(f"[api] /admin/diag-supabase error: {e} (trace: {trace_id})")
+        return JSONResponse({
+            "ok": False,
+            "error": str(e),
+            "trace": trace_id
+        }, status_code=500)
 
 @app.post("/scrape-now")
 async def scrape_now(request: ScrapeRequest, http_request: Request):
@@ -1142,12 +1224,54 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                     item_dicts = [item.dict() for item in normalized_data.items]
                     validated_items = validate_edge_function_payload(item_dicts)
                     
-                    # The Edge Function expects a specific structure - ensure each item has the required fields
-                    # Based on the error "Missing title", it seems to expect items at the root level
+                    # Filter items to only those with title AND (url OR source_listing_id)
+                    filtered_items = []
+                    for item in validated_items:
+                        if item.get("title") and (item.get("url") or item.get("source_listing_id")):
+                            filtered_items.append(item)
+                    
                     ef_payload = {
                         "query": query,
-                        "items": validated_items
+                        "items": filtered_items
                     }
+                    
+                    # Log filtering results
+                    total_items = len(validated_items)
+                    with_url = len([item for item in validated_items if item.get("url")])
+                    with_id = len([item for item in validated_items if item.get("source_listing_id")])
+                    print(f"[api] EF ready: total={total_items}, with_url={with_url}, with_id={with_id}")
+                    
+                    # If no items pass filter, skip EF call
+                    if len(filtered_items) == 0:
+                        print(f"[api] No items with title+url/id - skipping EF call (trace: {trace_id})")
+                        ef_status = None
+                        ef_body = "No items with required fields (title + url/id)"
+                        external_ok = True  # Not an error, just no items to process
+                        
+                        # Return early with skip response
+                        total_time = time.time() - scraper_start
+                        response = {
+                            "ok": True,
+                            "items": [item.dict() for item in normalized_data.items],
+                            "externalOk": True,
+                            "efStatus": ef_status,
+                            "efBody": ef_body,
+                            "trace": trace_id,
+                            "ingestMode": "skipped-no-url",
+                            "accepted": 0,
+                            "total": total_items
+                        }
+                        
+                        print(f"[api] scrape-now q=\"{query}\" items={len(normalized_data.items)} dur={total_time:.1f}s (trace: {trace_id})")
+                        return JSONResponse(
+                            content=response,
+                            headers={
+                                "X-Trace-Id": trace_id,
+                                "Access-Control-Allow-Origin": "*",
+                                "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+                                "Access-Control-Allow-Headers": "*"
+                            }
+                        )
                     
                     # Log Edge Function call details
                     print(f"[api] Posting to EF: items={len(ef_payload['items'])}, query_present={query is not None}")
@@ -1199,8 +1323,16 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                             except Exception as e:
                                 return {"status": "rejected", "reason": str(e)}
                         
-                        # Process all items concurrently
-                        tasks = [process_item(item) for item in ef_payload["items"]]
+                        # Apply same filtering to per-item fallback
+                        fallback_items = []
+                        for item in ef_payload["items"]:
+                            if item.get("title") and (item.get("url") or item.get("source_listing_id")):
+                                fallback_items.append(item)
+                        
+                        print(f"[api] Per-item fallback: {len(fallback_items)}/{len(ef_payload['items'])} items have required fields")
+                        
+                        # Process filtered items concurrently
+                        tasks = [process_item(item) for item in fallback_items]
                         per_item_results = await asyncio.gather(*tasks, return_exceptions=True)
                         
                         per_item_time = time.time() - per_item_start
