@@ -203,6 +203,33 @@ app.add_middleware(
     expose_headers=["x-trace-id"],
 )
 
+# CORS Guard Dependency
+def cors_guard(origin: str = Header(None), response: Response = None):
+    """CORS guard that validates origin and sets appropriate headers"""
+    # Always allow preflight (OPTIONS handled automatically by CORS middleware)
+    # For actual calls: if origin exists and is not allowed, let route return controlled error but set CORS headers
+    
+    # Log origin and trace for monitoring
+    trace_id = str(uuid.uuid4())[:8]
+    print(f"[api] CORS guard: origin={origin}, trace={trace_id}")
+    
+    if origin and is_allowed_origin(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
+        print(f"[api] CORS: allowed origin {origin} (trace: {trace_id})")
+        return
+    
+    if origin:
+        # Not allowed origin - let route return controlled error, but set CORS headers
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
+        print(f"[api] CORS: disallowed origin {origin} (trace: {trace_id})")
+    
+    # Without Origin (server-to-server) let it pass through
+    print(f"[api] CORS: no origin, server-to-server call (trace: {trace_id})")
+
 # --- Safe, lazy clients (don't create at import time) ---
 def get_scraper_base():
     return os.getenv("SCRAPER_BASE_URL", "").strip()
@@ -2991,33 +3018,6 @@ async def admin_diag_ef_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type,X-Admin-Token"
     return Response(status_code=200)
-
-# CORS Guard Dependency
-def cors_guard(origin: str = Header(None), response: Response = None):
-    """CORS guard that validates origin and sets appropriate headers"""
-    # Always allow preflight (OPTIONS handled automatically by CORS middleware)
-    # For actual calls: if origin exists and is not allowed, let route return controlled error but set CORS headers
-    
-    # Log origin and trace for monitoring
-    trace_id = str(uuid.uuid4())[:8]
-    print(f"[api] CORS guard: origin={origin}, trace={trace_id}")
-    
-    if origin and is_allowed_origin(origin):
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Vary"] = "Origin"
-        response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
-        print(f"[api] CORS: allowed origin {origin} (trace: {trace_id})")
-        return
-    
-    if origin:
-        # Not allowed origin - let route return controlled error, but set CORS headers
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Vary"] = "Origin"
-        response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
-        print(f"[api] CORS: disallowed origin {origin} (trace: {trace_id})")
-    
-    # Without Origin (server-to-server) let it pass through
-    print(f"[api] CORS: no origin, server-to-server call (trace: {trace_id})")
 
 if __name__ == "__main__":
     # Get port from environment (Railway sets PORT)
