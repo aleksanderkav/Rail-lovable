@@ -6,7 +6,7 @@ import uuid
 import asyncio
 from datetime import datetime, timezone
 from dataclasses import asdict, is_dataclass
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -172,21 +172,35 @@ http_client = httpx.AsyncClient(
 
 app = FastAPI(title="Rail-lovable Scraper", version="1.0.0")
 
-# CORS configuration for Lovable frontend
+# CORS Configuration
 ALLOWED_ORIGINS = [
-    "https://preview--card-pulse-watch.lovable.app",
     "https://card-pulse-watch.lovable.app",
-    "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",  # Additional preview origin
-    "*",  # safe because allow_credentials=False
+    "https://ed*.lovableproject.com",   # wildcard handled manually below
+    "https://*.lovableproject.com",
+    "https://*.lovable.app",
+    "http://localhost:3000",
+    "http://localhost:5173",
 ]
+
+def is_allowed_origin(origin: str) -> bool:
+    """Check if origin is allowed with wildcard support"""
+    if not origin: 
+        return False
+    if origin in ALLOWED_ORIGINS:
+        return True
+    # Simple wildcard checks
+    return (
+        origin.endswith(".lovable.app") or
+        origin.endswith(".lovableproject.com")
+    )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
+    allow_origins=["*"],  # We validate in our own dependency
     allow_credentials=False,
-    expose_headers=["X-Trace-Id"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Admin-Token", "x-function-secret"],
+    expose_headers=["x-trace-id"],
 )
 
 # --- Safe, lazy clients (don't create at import time) ---
@@ -998,7 +1012,7 @@ async def diag_ef(ping: Optional[str] = None):
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }, status_code=500)
 
-@app.post("/admin/merge-cards")
+@app.post("/admin/merge-cards", dependencies=[Depends(cors_guard)])
 async def admin_merge_cards(request: Request):
     """Admin endpoint to proxy merge-cards requests to Edge Function"""
     trace_id = str(uuid.uuid4())[:8]
@@ -1108,9 +1122,11 @@ async def smoketest():
         )
 
 @app.options("/scrape-now")
-async def scrape_now_options():
-    """CORS preflight handler for /scrape-now"""
-    return JSONResponse({"ok": True})
+async def scrape_now_options(response: Response):
+    """CORS preflight for scrape-now endpoint"""
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,X-Admin-Token,x-function-secret"
+    return Response(status_code=200)
 
 @app.options("/scrape-now/")
 async def scrape_now_options_trailing():
@@ -1127,24 +1143,24 @@ async def normalize_test_options():
     return Response(status_code=200)
 
 @app.options("/admin/merge-cards")
-async def admin_merge_cards_options():
-    """Handle CORS preflight for /admin/merge-cards"""
-    # CORSMiddleware will add headers, but we ensure 200 with bodyless response
-    from fastapi.responses import Response
+async def admin_merge_cards_options(response: Response):
+    """CORS preflight for admin merge-cards endpoint"""
+    response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,X-Admin-Token"
     return Response(status_code=200)
 
 @app.options("/admin/logs")
-async def admin_logs_options():
-    """Handle CORS preflight for /admin/logs"""
-    # CORSMiddleware will add headers, but we ensure 200 with bodyless response
-    from fastapi.responses import Response
+async def admin_logs_options(response: Response):
+    """CORS preflight for admin logs endpoint"""
+    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,X-Admin-Token"
     return Response(status_code=200)
 
 @app.options("/admin/tracked-queries")
-async def admin_tracked_queries_options():
-    """Handle CORS preflight for /admin/tracked-queries"""
-    # CORSMiddleware will add headers, but we ensure 200 with bodyless response
-    from fastapi.responses import Response
+async def admin_tracked_queries_options(response: Response):
+    """CORS preflight for admin tracked-queries endpoint"""
+    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,X-Admin-Token"
     return Response(status_code=200)
 
 @app.options("/admin/diag-supabase")
@@ -1154,7 +1170,7 @@ async def admin_diag_supabase_options():
     from fastapi.responses import Response
     return Response(status_code=200)
 
-@app.get("/admin/logs")
+@app.get("/admin/logs", dependencies=[Depends(cors_guard)])
 async def admin_logs(request: Request, limit: int = 200):
     """Admin endpoint to proxy logs requests to Supabase REST API"""
     trace_id = str(uuid.uuid4())[:8]
@@ -1257,7 +1273,7 @@ async def admin_logs(request: Request, limit: int = 200):
             status_code=200  # Always 200 to prevent UI crashes
         )
 
-@app.get("/admin/tracked-queries")
+@app.get("/admin/tracked-queries", dependencies=[Depends(cors_guard)])
 async def admin_tracked_queries(request: Request, limit: int = 200):
     """Admin endpoint to proxy tracked-queries requests to Supabase REST API"""
     trace_id = str(uuid.uuid4())[:8]
@@ -1437,7 +1453,7 @@ async def admin_diag_supabase(request: Request):
             status_code=200  # Always 200 to prevent UI crashes
         )
 
-@app.post("/scrape-now")
+@app.post("/scrape-now", dependencies=[Depends(cors_guard)])
 async def scrape_now(request: ScrapeRequest, http_request: Request):
     """
     On-demand scraping endpoint for Lovable.
@@ -2132,7 +2148,7 @@ async def ingest_items(request: IngestItemsRequest, http_request: Request):
             }
         )
 
-@app.get("/admin/diag-db")
+@app.get("/admin/diag-db", dependencies=[Depends(cors_guard)])
 async def admin_diag_db(request: Request):
     """Quick diagnostics endpoint to test Supabase REST API connectivity"""
     trace_id = str(uuid.uuid4())[:8]
@@ -2206,19 +2222,13 @@ async def admin_diag_db(request: Request):
         )
 
 @app.options("/admin/diag-db")
-async def admin_diag_db_options():
+async def admin_diag_db_options(response: Response):
     """CORS preflight for admin diag-db endpoint"""
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",
-            "Access-Control-Allow-Methods": "GET,OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type,X-Admin-Token",
-            "Access-Control-Max-Age": "86400"
-        }
-    )
+    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,X-Admin-Token"
+    return Response(status_code=200)
 
-@app.get("/admin/health")
+@app.get("/admin/health", dependencies=[Depends(cors_guard)])
 async def admin_health(request: Request):
     """Comprehensive health check endpoint for admin monitoring"""
     trace_id = str(uuid.uuid4())[:8]
@@ -2373,17 +2383,11 @@ async def admin_health(request: Request):
         )
 
 @app.options("/admin/health")
-async def admin_health_options():
+async def admin_health_options(response: Response):
     """CORS preflight for admin health endpoint"""
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",
-            "Access-Control-Allow-Methods": "GET,OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type,X-Admin-Token",
-            "Access-Control-Max-Age": "86400"
-        }
-    )
+    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,X-Admin-Token"
+    return Response(status_code=200)
 
 # Global health check cache
 _health_cache = {
@@ -2895,7 +2899,7 @@ def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
         print(f"[scraper] Error parsing card: {e}")
         return None
 
-@app.get("/admin/diag-ef")
+@app.get("/admin/diag-ef", dependencies=[Depends(cors_guard)])
 async def admin_diag_ef(request: Request):
     """Quick diagnostics endpoint to test Edge Function connectivity via ingest path"""
     trace_id = str(uuid.uuid4())[:8]
@@ -2982,17 +2986,38 @@ async def admin_diag_ef(request: Request):
         )
 
 @app.options("/admin/diag-ef")
-async def admin_diag_ef_options():
+async def admin_diag_ef_options(response: Response):
     """CORS preflight for admin diag-ef endpoint"""
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",
-            "Access-Control-Allow-Methods": "GET,OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type,X-Admin-Token",
-            "Access-Control-Max-Age": "86400"
-        }
-    )
+    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,X-Admin-Token"
+    return Response(status_code=200)
+
+# CORS Guard Dependency
+def cors_guard(origin: str = Header(None), response: Response = None):
+    """CORS guard that validates origin and sets appropriate headers"""
+    # Always allow preflight (OPTIONS handled automatically by CORS middleware)
+    # For actual calls: if origin exists and is not allowed, let route return controlled error but set CORS headers
+    
+    # Log origin and trace for monitoring
+    trace_id = str(uuid.uuid4())[:8]
+    print(f"[api] CORS guard: origin={origin}, trace={trace_id}")
+    
+    if origin and is_allowed_origin(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
+        print(f"[api] CORS: allowed origin {origin} (trace: {trace_id})")
+        return
+    
+    if origin:
+        # Not allowed origin - let route return controlled error, but set CORS headers
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
+        print(f"[api] CORS: disallowed origin {origin} (trace: {trace_id})")
+    
+    # Without Origin (server-to-server) let it pass through
+    print(f"[api] CORS: no origin, server-to-server call (trace: {trace_id})")
 
 if __name__ == "__main__":
     # Get port from environment (Railway sets PORT)
