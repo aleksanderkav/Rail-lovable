@@ -34,6 +34,54 @@ def get_function_secret():
 def get_supabase_url():
     return os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 
+# Enhanced validation for Edge Function payload
+def validate_edge_function_payload(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ensure each item has required fields for Edge Function"""
+    validated_items = []
+    for item in items:
+        # Create a clean copy with required fields
+        validated_item = {
+            "title": item.get("title") or item.get("raw_title") or "Unknown Title",
+            "raw_title": item.get("raw_title") or item.get("title") or "Unknown Title",
+            "price": item.get("price"),
+            "currency": item.get("currency") or "USD",
+            "source": item.get("source") or "ebay",
+            "raw_description": item.get("raw_description") or item.get("description"),
+            "url": item.get("url"),
+            "ended_at": item.get("ended_at"),
+            "images": item.get("images"),
+            "source_listing_id": item.get("source_listing_id"),
+            "franchise": item.get("franchise"),
+            "set_name": item.get("set_name"),
+            "edition": item.get("edition"),
+            "number": item.get("number"),
+            "year": item.get("year"),
+            "language": item.get("language"),
+            "grading_company": item.get("grading_company"),
+            "grade": item.get("grade"),
+            "rarity": item.get("rarity"),
+            "is_holo": item.get("is_holo"),
+            "tags": item.get("tags"),
+            "raw_query": item.get("raw_query"),
+            "category_guess": item.get("category_guess"),
+            "id": item.get("id"),
+            "sold": item.get("sold"),
+            "image_url": item.get("image_url"),
+            "shipping_price": item.get("shipping_price"),
+            "total_price": item.get("total_price"),
+            "bids": item.get("bids"),
+            "condition": item.get("condition"),
+            "canonical_key": item.get("canonical_key"),
+            "set": item.get("set"),
+            "grader": item.get("grader"),
+            "grade_value": item.get("grade_value"),
+            "parsed": item.get("parsed")
+        }
+        # Remove None values to clean up the payload
+        validated_item = {k: v for k, v in validated_item.items() if v is not None}
+        validated_items.append(validated_item)
+    return validated_items
+
 # Fallback parse_title function
 # def safe_parse_title(t: str):
 #     if normalizer and hasattr(normalizer, "parse_title"):
@@ -625,16 +673,18 @@ async def diag_ef(ping: Optional[str] = None):
     
     try:
         # Test payload - match the format expected by the Edge Function
+        test_items = [{
+            "title": "test item",  # Edge Function expects this field
+            "raw_title": "test item",
+            "price": 1.0,
+            "currency": "USD",
+            "source": "ebay",
+            "raw_description": "test description"
+        }]
+        validated_items = validate_edge_function_payload(test_items)
         test_payload = {
             "query": "diagnostic",
-            "items": [{
-                "title": "test item",  # Edge Function expects this field
-                "raw_title": "test item",
-                "price": 1.0,
-                "currency": "USD",
-                "source": "ebay",
-                "raw_description": "test description"
-            }]
+            "items": validated_items
         }
         
         print(f"[api] Testing Edge Function with trace_id: {trace_id}")
@@ -850,13 +900,10 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                         "items": []
                     }
                     
-                    # Convert items to dict and ensure each has a title field
-                    for item in normalized_data.items:
-                        item_dict = item.dict()
-                        # Ensure title field exists for Edge Function
-                        if not item_dict.get("title") and item_dict.get("raw_title"):
-                            item_dict["title"] = item_dict["raw_title"]
-                        ef_payload["items"].append(item_dict)
+                    # Convert items to dict and validate for Edge Function
+                    item_dicts = [item.dict() for item in normalized_data.items]
+                    validated_items = validate_edge_function_payload(item_dicts)
+                    ef_payload["items"] = validated_items
                     
                     # Log Edge Function call details
                     print(f"[api] Posting to EF: items={len(ef_payload['items'])}, query_present={query is not None}")
