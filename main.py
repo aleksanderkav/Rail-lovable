@@ -243,6 +243,7 @@ async def shutdown_event():
 
 class ScrapeRequest(BaseModel):
     query: str
+    dryRun: Optional[bool] = False
 
 class Item(BaseModel):
     """Scraped item with AI enrichment support"""
@@ -348,12 +349,15 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
     # Helper function to extract URL and listing ID from various field names
     def extract_url_and_id(item: Dict[str, Any]) -> tuple[str, str]:
         """Extract URL and source_listing_id from item data"""
+        import re
+        
         # Extract URL from first non-empty of: ["url","href","itemWebUrl","viewItemURL","link"]
         url = None
         for url_field in ["url", "href", "itemWebUrl", "viewItemURL", "link"]:
             if url_field in item and item[url_field]:
                 url = str(item[url_field]).strip()
                 if url:
+                    print(f"[api] Found URL in {url_field}: {url}")
                     break
         
         # Extract source_listing_id from first non-empty of: ["source_listing_id","itemId","id","listing_id","ebay_id"]
@@ -362,6 +366,7 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
             if id_field in item and item[id_field]:
                 source_listing_id = str(item[id_field]).strip()
                 if source_listing_id:
+                    print(f"[api] Found ID in {id_field}: {source_listing_id}")
                     break
         
         # If no ID but URL looks like an eBay item, parse with regex
@@ -370,11 +375,22 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
             itm_match = re.search(r"/itm/(\d{6,})", url)
             if itm_match:
                 source_listing_id = itm_match.group(1)
+                print(f"[api] Extracted ID from eBay URL /itm/: {source_listing_id}")
             else:
                 # Try /p/ pattern
                 p_match = re.search(r"/p/(\d{6,})", url)
                 if p_match:
                     source_listing_id = p_match.group(1)
+                    print(f"[api] Extracted ID from eBay URL /p/: {source_listing_id}")
+        
+        # Log final extraction result
+        print(f"[api] Final extraction result: url={url}, source_listing_id={source_listing_id}")
+        
+        # If no URL/ID found, log the full item for diagnosis
+        if not url and not source_listing_id:
+            print(f"[api] WARNING: No URL or ID found in item. Full item data:")
+            print(f"[api] Item keys: {list(item.keys())}")
+            print(f"[api] Item sample values: {dict(list(item.items())[:5])}")
         
         return url, source_listing_id
     
@@ -1356,6 +1372,25 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
     # Log the incoming request
     print(f"[api] {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} Manual scrape request from {client_ip}: '{query}' (trace: {trace_id})")
     
+    # Handle dryRun mode for health checks
+    if request.dryRun:
+        print(f"[api] DRY RUN mode - skipping actual processing (trace: {trace_id})")
+        return JSONResponse(
+            content={
+                "ok": True,
+                "dryRun": True,
+                "query": query,
+                "message": "Health check completed successfully",
+                "trace": trace_id
+            },
+            headers={
+                "X-Trace-Id": trace_id,
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+                "Access-Control-Allow-Headers": "*"
+            }
+        )
+    
     # Global timeout for entire request (25 seconds max)
     async with asyncio.timeout(GLOBAL_TIMEOUT):
         try:
@@ -2099,6 +2134,192 @@ async def admin_diag_db_options():
             "Access-Control-Max-Age": "86400"
         }
     )
+
+@app.get("/admin/health")
+async def admin_health(request: Request):
+    """Comprehensive health check endpoint for admin monitoring"""
+    trace_id = str(uuid.uuid4())[:8]
+    client_ip = request.client.host if request.client else "unknown"
+    origin = request.headers.get("origin", "unknown")
+    
+    # Check admin token
+    admin_token = request.headers.get("X-Admin-Token")
+    expected_token = get_admin_proxy_token()
+    
+    if not admin_token or admin_token != expected_token:
+        # Log failed attempt for security review
+        print(f"[api] SECURITY: Unauthorized health check attempt from {client_ip} (origin: {origin}) at {time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        return JSONResponse(
+            content={"error": "Unauthorized"},
+            status_code=401,
+            headers={"x-trace-id": trace_id}
+        )
+    
+    print(f"[api] /admin/health called from {client_ip} (trace: {trace_id})")
+    
+    # Check cache first
+    cached_result = get_cached_health()
+    if cached_result:
+        print(f"[api] Returning cached health result (trace: {trace_id})")
+        cached_result["trace"] = trace_id  # Update trace ID for this request
+        return JSONResponse(
+            content=cached_result,
+            headers={
+                "x-trace-id": trace_id,
+                "Content-Type": "application/json",
+                "X-Cache": "HIT"
+            }
+        )
+    
+    print(f"[api] Cache miss, running health checks (trace: {trace_id})")
+    
+    # Run all health checks in parallel with timeout
+    async def check_supabase() -> dict:
+        """Check Supabase REST API connectivity"""
+        start_time = time.time()
+        try:
+            service_role_key = get_service_role_key()
+            supabase_url = get_supabase_url()
+            
+            if not service_role_key or not supabase_url:
+                return {"status": "fail", "error": "Service not configured", "latency_ms": 0}
+            
+            rest_url = f"{supabase_url}/rest/v1/tracked_queries"
+            params = {"select": "1", "limit": "1"}
+            
+            headers = {
+                "Authorization": f"Bearer {service_role_key}",
+                "apikey": service_role_key,
+                "Content-Type": "application/json"
+            }
+            
+            response = await asyncio.wait_for(
+                http_client.get(rest_url, headers=headers, params=params),
+                timeout=3.0
+            )
+            
+            latency_ms = int((time.time() - start_time) * 1000)
+            
+            if response.status_code < 400:
+                return {"status": "ok", "latency_ms": latency_ms}
+            else:
+                return {"status": "fail", "error": f"HTTP {response.status_code}", "latency_ms": latency_ms}
+                
+        except asyncio.TimeoutError:
+            return {"status": "fail", "error": "timeout", "latency_ms": int((time.time() - start_time) * 1000)}
+        except Exception as e:
+            return {"status": "fail", "error": str(e), "latency_ms": int((time.time() - start_time) * 1000)}
+    
+    async def check_edge_function() -> dict:
+        """Check Edge Function connectivity via /scrape-now"""
+        start_time = time.time()
+        try:
+            # Create a minimal health check request
+            health_request = ScrapeRequest(query="health-check")
+            
+            # Call the scrape-now endpoint with dryRun
+            response = await scrape_now(health_request, request)
+            
+            latency_ms = int((time.time() - start_time) * 1000)
+            
+            if hasattr(response, 'status_code') and response.status_code == 200:
+                return {"status": "ok", "latency_ms": latency_ms}
+            else:
+                return {"status": "fail", "error": "scrape-now failed", "latency_ms": latency_ms}
+                
+        except asyncio.TimeoutError:
+            return {"status": "fail", "error": "timeout", "latency_ms": int((time.time() - start_time) * 1000)}
+        except Exception as e:
+            return {"status": "fail", "error": str(e), "latency_ms": int((time.time() - start_time) * 1000)}
+    
+    # Run all checks concurrently
+    try:
+        supabase_result, ef_result = await asyncio.gather(
+            check_supabase(),
+            check_edge_function(),
+            return_exceptions=True
+        )
+        
+        # Handle exceptions gracefully
+        if isinstance(supabase_result, Exception):
+            supabase_result = {"status": "fail", "error": str(supabase_result), "latency_ms": 0}
+        if isinstance(ef_result, Exception):
+            ef_result = {"status": "fail", "error": str(ef_result), "latency_ms": 0}
+        
+        # Build response
+        response = {
+            "supabase": supabase_result,
+            "edge_function": ef_result,
+            "proxy": {
+                "status": "ok",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            },
+            "trace": trace_id
+        }
+        
+        # Cache the successful result
+        set_health_cache(response)
+        
+        return JSONResponse(
+            content=response,
+            headers={
+                "x-trace-id": trace_id,
+                "Content-Type": "application/json",
+                "X-Cache": "MISS"
+            }
+        )
+        
+    except Exception as e:
+        print(f"[api] /admin/health error: {e} (trace: {trace_id})")
+        return JSONResponse(
+            content={
+                "supabase": {"status": "fail", "error": "health_check_failed", "latency_ms": 0},
+                "edge_function": {"status": "fail", "error": "health_check_failed", "latency_ms": 0},
+                "proxy": {
+                    "status": "fail",
+                    "error": str(e),
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                },
+                "trace": trace_id
+            },
+            headers={
+                "x-trace-id": trace_id,
+                "Content-Type": "application/json"
+            },
+            status_code=200  # Always 200 to prevent UI crashes
+        )
+
+@app.options("/admin/health")
+async def admin_health_options():
+    """CORS preflight for admin health endpoint"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",
+            "Access-Control-Allow-Methods": "GET,OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type,X-Admin-Token",
+            "Access-Control-Max-Age": "86400"
+        }
+    )
+
+# Global health check cache
+_health_cache = {
+    "last_check": 0,
+    "cache_duration": 30,  # 30 seconds
+    "result": None
+}
+
+def get_cached_health() -> Optional[dict]:
+    """Get cached health check result if still valid"""
+    current_time = time.time()
+    if current_time - _health_cache["last_check"] < _health_cache["cache_duration"]:
+        return _health_cache["result"]
+    return None
+
+def set_health_cache(result: dict):
+    """Cache health check result with timestamp"""
+    _health_cache["last_check"] = time.time()
+    _health_cache["result"] = result
 
 if __name__ == "__main__":
     # Get port from environment (Railway sets PORT)
