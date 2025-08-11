@@ -921,7 +921,11 @@ async def admin_logs(request: Request, limit: int = 200):
     
     if not admin_token or admin_token != expected_token:
         print(f"[api] /admin/logs unauthorized access attempt from {client_ip} (trace: {trace_id})")
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        return JSONResponse(
+            content={"logs": [], "error": "Unauthorized", "trace": trace_id},
+            headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+            status_code=401
+        )
     
     print(f"[api] /admin/logs called from {client_ip} (trace: {trace_id})")
     
@@ -931,7 +935,11 @@ async def admin_logs(request: Request, limit: int = 200):
         supabase_url = get_supabase_url()
         
         if not service_role_key or not supabase_url:
-            raise HTTPException(status_code=500, detail="Service not configured")
+            return JSONResponse(
+                content={"logs": [], "error": "Service not configured", "trace": trace_id},
+                headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+                status_code=200
+            )
         
         # Build Supabase REST API URL with safe SELECT and valid order field
         rest_url = f"{supabase_url}/rest/v1/scraping_logs"
@@ -954,27 +962,32 @@ async def admin_logs(request: Request, limit: int = 200):
         if response.status_code == 200:
             logs = response.json()
             print(f"[api] Retrieved {len(logs)} logs (trace: {trace_id})")
-            return JSONResponse({
-                "ok": True,
-                "logs": logs,
-                "count": len(logs),
-                "trace": trace_id
-            })
+            return JSONResponse(
+                content={"logs": logs, "count": len(logs), "trace": trace_id},
+                headers={"x-trace-id": trace_id, "Content-Type": "application/json"}
+            )
         else:
-            # Return original Supabase error with request ID
+            # Return empty array with error details
             sb_request_id = response.headers.get("sb-request-id", "unknown")
             print(f"[api] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
-            return JSONResponse({
-                "ok": False,
-                "error": f"Supabase REST error: {response.status_code}",
-                "sb_request_id": sb_request_id,
-                "original_response": response.text,
-                "trace": trace_id
-            }, status_code=502)
+            return JSONResponse(
+                content={
+                    "logs": [],
+                    "error": f"Supabase REST error: {response.status_code}",
+                    "sb_request_id": sb_request_id,
+                    "trace": trace_id
+                },
+                headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+                status_code=200  # Always 200 to prevent UI crashes
+            )
         
     except Exception as e:
         print(f"[api] /admin/logs error: {e} (trace: {trace_id})")
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            content={"logs": [], "error": str(e), "trace": trace_id},
+            headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+            status_code=200  # Always 200 to prevent UI crashes
+        )
 
 @app.get("/admin/tracked-queries")
 async def admin_tracked_queries(request: Request, limit: int = 200):
@@ -988,7 +1001,11 @@ async def admin_tracked_queries(request: Request, limit: int = 200):
     
     if not admin_token or admin_token != expected_token:
         print(f"[api] /admin/tracked-queries unauthorized access attempt from {client_ip} (trace: {trace_id})")
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        return JSONResponse(
+            content={"queries": [], "error": "Unauthorized", "trace": trace_id},
+            headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+            status_code=401
+        )
     
     print(f"[api] /admin/tracked-queries called from {client_ip} (trace: {trace_id})")
     
@@ -998,7 +1015,11 @@ async def admin_tracked_queries(request: Request, limit: int = 200):
         supabase_url = get_supabase_url()
         
         if not service_role_key or not supabase_url:
-            raise HTTPException(status_code=500, detail="Service not configured")
+            return JSONResponse(
+                content={"queries": [], "error": "Service not configured", "trace": trace_id},
+                headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+                status_code=200
+            )
         
         # Build Supabase REST API URL with safe SELECT and valid order field
         rest_url = f"{supabase_url}/rest/v1/tracked_queries"
@@ -1021,27 +1042,32 @@ async def admin_tracked_queries(request: Request, limit: int = 200):
         if response.status_code == 200:
             queries = response.json()
             print(f"[api] Retrieved {len(queries)} tracked queries (trace: {trace_id})")
-            return JSONResponse({
-                "ok": True,
-                "queries": queries,
-                "count": len(queries),
-                "trace": trace_id
-            })
+            return JSONResponse(
+                content={"queries": queries, "count": len(queries), "trace": trace_id},
+                headers={"x-trace-id": trace_id, "Content-Type": "application/json"}
+            )
         else:
-            # Return original Supabase error with request ID
+            # Return empty array with error details
             sb_request_id = response.headers.get("sb-request-id", "unknown")
             print(f"[api] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
-            return JSONResponse({
-                "ok": False,
-                "error": f"Supabase REST error: {response.status_code}",
-                "sb_request_id": sb_request_id,
-                "original_response": response.text,
-                "trace": trace_id
-            }, status_code=502)
+            return JSONResponse(
+                content={
+                    "queries": [],
+                    "error": f"Supabase REST error: {response.status_code}",
+                    "sb_request_id": sb_request_id,
+                    "trace": trace_id
+                },
+                headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+                status_code=200  # Always 200 to prevent UI crashes
+            )
         
     except Exception as e:
         print(f"[api] /admin/tracked-queries error: {e} (trace: {trace_id})")
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            content={"queries": [], "error": str(e), "trace": trace_id},
+            headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+            status_code=200  # Always 200 to prevent UI crashes
+        )
 
 # Removed duplicate endpoint - CORS is handled by CORSMiddleware
 
@@ -1057,7 +1083,11 @@ async def admin_diag_supabase(request: Request):
     
     if not admin_token or admin_token != expected_token:
         print(f"[api] /admin/diag-supabase unauthorized access attempt from {client_ip} (trace: {trace_id})")
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        return JSONResponse(
+            content={"ok": False, "error": "Unauthorized", "trace": trace_id},
+            headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+            status_code=401
+        )
     
     print(f"[api] /admin/diag-supabase called from {client_ip} (trace: {trace_id})")
     
@@ -1067,7 +1097,11 @@ async def admin_diag_supabase(request: Request):
         supabase_url = get_supabase_url()
         
         if not service_role_key or not supabase_url:
-            raise HTTPException(status_code=500, detail="Service not configured")
+            return JSONResponse(
+                content={"ok": False, "error": "Service not configured", "trace": trace_id},
+                headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+                status_code=200  # Always 200 to prevent UI crashes
+            )
         
         # Test with minimal query
         rest_url = f"{supabase_url}/rest/v1/scraping_logs"
@@ -1084,22 +1118,25 @@ async def admin_diag_supabase(request: Request):
         response = await http_client.get(rest_url, headers=headers, params=params)
         
         # Return detailed response information
-        return JSONResponse({
-            "ok": response.status_code < 400,
-            "status": response.status_code,
-            "sb_request_id": response.headers.get("sb-request-id", "unknown"),
-            "response_headers": dict(response.headers),
-            "body": response.text[:500],  # Truncate long responses
-            "trace": trace_id
-        })
+        return JSONResponse(
+            content={
+                "ok": response.status_code < 400,
+                "status": response.status_code,
+                "sb_request_id": response.headers.get("sb-request-id", "unknown"),
+                "response_headers": dict(response.headers),
+                "body": response.text[:500],  # Truncate long responses
+                "trace": trace_id
+            },
+            headers={"x-trace-id": trace_id, "Content-Type": "application/json"}
+        )
         
     except Exception as e:
         print(f"[api] /admin/diag-supabase error: {e} (trace: {trace_id})")
-        return JSONResponse({
-            "ok": False,
-            "error": str(e),
-            "trace": trace_id
-        }, status_code=500)
+        return JSONResponse(
+            content={"ok": False, "error": str(e), "trace": trace_id},
+            headers={"x-trace-id": trace_id, "Content-Type": "application/json"},
+            status_code=200  # Always 200 to prevent UI crashes
+        )
 
 @app.post("/scrape-now")
 async def scrape_now(request: ScrapeRequest, http_request: Request):
@@ -1313,14 +1350,25 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                         # Process items concurrently with individual timeouts
                         async def process_item(item):
                             try:
+                                # Log item details before processing
+                                item_keys = list(item.keys())
+                                item_title = item.get("title", "NO_TITLE")
+                                print(f"[api] Per-item EF: processing '{item_title}' with keys: {item_keys}")
+                                
                                 status, body = await asyncio.wait_for(
                                     post_item_to_edge_function(item, query),
                                     timeout=EF_TIMEOUT
                                 )
+                                
+                                # Log result
+                                print(f"[api] Per-item EF: '{item_title}' -> status={status}, body={body[:100] if body else '<no-body>'}")
+                                
                                 return {"status": "fulfilled", "value": {"status": status, "body": body}}
                             except asyncio.TimeoutError:
+                                print(f"[api] Per-item EF: '{item_title}' -> timeout")
                                 return {"status": "rejected", "reason": "timeout"}
                             except Exception as e:
+                                print(f"[api] Per-item EF: '{item_title}' -> error: {e}")
                                 return {"status": "rejected", "reason": str(e)}
                         
                         # Apply same filtering to per-item fallback
