@@ -655,31 +655,90 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
     return NormalizedResponse(items=items)
 
 async def call_scraper(query: str) -> Dict[str, Any]:
-    """Call the external scraper and return raw response with retry logic"""
+    """Call external scraper or generate fallback data"""
     scraper_base = get_scraper_base()
     
-    # If no scraper is configured, generate realistic fallback data
     if not scraper_base:
-        print(f"[api] No scraper configured - generating fallback data for query: '{query}'")
-        return generate_fallback_scraper_data(query)
+        print(f"[api] No scraper configured - using eBay HTML scraper for query: '{query}'")
+        try:
+            # Use new eBay scraper for both active and sold listings
+            active_items = await scrape_ebay(query, "active")
+            sold_items = await scrape_ebay(query, "sold")
+            
+            # Merge and de-duplicate by source_listing_id
+            all_items = []
+            seen_ids = set()
+            
+            # Add active items first
+            for item in active_items:
+                if item.get("source_listing_id") and item["source_listing_id"] not in seen_ids:
+                    all_items.append(item)
+                    seen_ids.add(item["source_listing_id"])
+            
+            # Add sold items (they might override active ones with same ID)
+            for item in sold_items:
+                if item.get("source_listing_id"):
+                    # Remove existing item with same ID if present
+                    all_items = [existing for existing in all_items if existing.get("source_listing_id") != item["source_listing_id"]]
+                    all_items.append(item)
+                    seen_ids.add(item["source_listing_id"])
+            
+            print(f"[api] eBay scraper returned {len(active_items)} active + {len(sold_items)} sold = {len(all_items)} unique items")
+            
+            return {
+                "query": query,
+                "items": all_items,
+                "source": "ebay_scraper"
+            }
+            
+        except Exception as e:
+            print(f"[api] eBay scraper failed: {e} - falling back to generated data")
+            return generate_fallback_scraper_data(query)
     
+    # Original external scraper logic
     max_retries = 2
-    base_delay = 0.5
-    
     for attempt in range(max_retries + 1):
         try:
-            response = await http_client.get(f"{scraper_base}/scrape", params={"query": query})
-            response.raise_for_status()
-            return response.json()
+            scraper_start = time.time()
+            response = await asyncio.wait_for(
+                http_client.get(
+                    f"{scraper_base}/scrape",
+                    params={"query": query},
+                    timeout=SCRAPER_TIMEOUT
+                ),
+                timeout=SCRAPER_TIMEOUT
+            )
+            scraper_time = time.time() - scraper_start
+            print(f"[api] Step 1: Scraper completed in {scraper_time:.2f}s")
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                raise Exception(f"Scraper returned {response.status_code}")
+                
+        except asyncio.TimeoutError:
+            if attempt == max_retries:
+                print(f"[api] Scraper timeout after {max_retries + 1} attempts - using eBay scraper")
+                try:
+                    return await call_scraper(query)  # Recursive call to eBay scraper
+                except Exception:
+                    return generate_fallback_scraper_data(query)
+            else:
+                print(f"[api] Scraper timeout, attempt {attempt + 1}/{max_retries + 1}")
+                
         except Exception as e:
             if attempt == max_retries:
-                print(f"[api] Scraper failed after {max_retries + 1} attempts - using fallback data")
-                return generate_fallback_scraper_data(query)
-            
-            # Add jitter to delay
-            delay = base_delay * (2 ** attempt) + (0.1 * attempt)
-            print(f"[api] Scraper attempt {attempt + 1} failed, retrying in {delay:.2f}s: {str(e)}")
-            await asyncio.sleep(delay)
+                print(f"[api] Scraper failed after {max_retries + 1} attempts - using eBay scraper")
+                try:
+                    return await call_scraper(query)  # Recursive call to eBay scraper
+                except Exception:
+                    return generate_fallback_scraper_data(query)
+            else:
+                print(f"[api] Scraper error, attempt {attempt + 1}/{max_retries + 1}: {e}")
+    
+    # Final fallback
+    print(f"[api] All scraper attempts failed - using fallback data")
+    return generate_fallback_scraper_data(query)
 
 def generate_fallback_scraper_data(query: str) -> Dict[str, Any]:
     """Generate realistic fallback data when scraper is not available"""
@@ -2320,6 +2379,429 @@ def set_health_cache(result: dict):
     """Cache health check result with timestamp"""
     _health_cache["last_check"] = time.time()
     _health_cache["result"] = result
+
+# eBay scraper configuration
+EBAY_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+]
+
+CURRENCY_SYMBOLS = {
+    "$": "USD",
+    "£": "GBP", 
+    "€": "EUR",
+    "kr": "NOK",  # Norwegian/Swedish
+    "¥": "JPY",
+    "₹": "INR",
+    "₽": "RUB"
+}
+
+async def scrape_ebay(query: str, mode: str = "active") -> List[Dict[str, Any]]:
+    """Scrape eBay listings with robust parsing and anti-bot measures"""
+    import re
+    import random
+    import time
+    
+    # Build eBay URL based on mode
+    if mode == "active":
+        url = f"https://www.ebay.com/sch/i.html?_nkw={query}&_sop=10&rt=nc"
+    elif mode == "sold":
+        url = f"https://www.ebay.com/sch/i.html?_nkw={query}&LH_Sold=1&LH_Complete=1&rt=nc"
+    else:
+        raise ValueError(f"Invalid mode: {mode}")
+    
+    print(f"[scraper] Scraping eBay {mode} mode: {url}")
+    
+    # Rotate User-Agent
+    user_agent = random.choice(EBAY_USER_AGENTS)
+    
+    headers = {
+        "User-Agent": user_agent,
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.ebay.com/",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
+    }
+    
+    # Retry logic with jitter and backoff
+    max_retries = 3
+    base_delay = 0.2  # 200ms base
+    
+    for attempt in range(max_retries):
+        try:
+            # Add jitter to delay
+            jitter = random.uniform(0.8, 1.2)
+            delay = base_delay * jitter
+            
+            if attempt > 0:
+                # Exponential backoff
+                delay = delay * (1.6 ** attempt)
+                print(f"[scraper] Retry {attempt + 1}/{max_retries} after {delay:.2f}s delay")
+            
+            # Random sleep between requests
+            sleep_time = random.uniform(1.0, 2.0)
+            print(f"[scraper] Sleeping {sleep_time:.2f}s before request")
+            await asyncio.sleep(sleep_time)
+            
+            # Make request with timeouts
+            response = await asyncio.wait_for(
+                http_client.get(url, headers=headers),
+                timeout=17.0  # connect=5s + read=12s
+            )
+            
+            if response.status_code != 200:
+                raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
+            
+            print(f"[scraper] Successfully fetched {len(response.content)} bytes")
+            return parse_ebay_listings(response.text, query, mode)
+            
+        except asyncio.TimeoutError:
+            print(f"[scraper] Timeout on attempt {attempt + 1}")
+            if attempt == max_retries - 1:
+                raise Exception("All retry attempts timed out")
+        except Exception as e:
+            print(f"[scraper] Error on attempt {attempt + 1}: {e}")
+            if attempt == max_retries - 1:
+                raise Exception(f"All retry attempts failed: {e}")
+    
+    raise Exception("Unexpected retry loop exit")
+
+def parse_ebay_listings(html: str, query: str, mode: str) -> List[Dict[str, Any]]:
+    """Parse eBay HTML listings with robust CSS selectors and fallbacks"""
+    try:
+        from selectolax.parser import HTMLParser
+        parser = HTMLParser(html)
+    except ImportError:
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
+            # Convert to selectolax-like interface for compatibility
+            class BS4Wrapper:
+                def css(self, selector):
+                    return soup.select(selector)
+                
+                def text(self):
+                    return soup.get_text()
+                
+                def attributes(self):
+                    return soup.attrs
+                
+                def get(self, attr):
+                    return soup.get(attr)
+            parser = BS4Wrapper()
+        except ImportError:
+            raise Exception("Neither selectolax nor BeautifulSoup4 available")
+    
+    print(f"[scraper] Parsing {mode} listings with {len(html)} bytes")
+    
+    # Try multiple selectors for listing cards
+    selectors = [
+        "li.s-item",
+        ".s-item",
+        "[data-testid='listing-card']",
+        ".srp-results .s-item"
+    ]
+    
+    cards = []
+    for selector in selectors:
+        cards = parser.css(selector)
+        if cards:
+            print(f"[scraper] Found {len(cards)} cards with selector: {selector}")
+            break
+    
+    if not cards:
+        print(f"[scraper] WARNING: No cards found with any selector")
+        # Log first 2 raw HTML lengths for debugging
+        lines = html.split('\n')
+        for i, line in enumerate(lines[:2]):
+            if line.strip():
+                print(f"[scraper] Raw HTML line {i}: {len(line)} chars")
+        return []
+    
+    items = []
+    for i, card in enumerate(cards[:50]):  # Limit to first 50 items
+        try:
+            item = parse_ebay_card(card, query, mode)
+            if item:
+                items.append(item)
+        except Exception as e:
+            print(f"[scraper] Error parsing card {i}: {e}")
+            continue
+    
+    print(f"[scraper] Successfully parsed {len(items)} valid items from {len(cards)} cards")
+    return items
+
+def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
+    """Parse individual eBay listing card with fallback selectors"""
+    try:
+        # Extract URL with fallbacks
+        url = None
+        url_selectors = [
+            "a.s-item__link@href",
+            "a[href*='/itm/']@href",
+            "a[href*='/p/']@href",
+            "a@href"
+        ]
+        
+        for selector in url_selectors:
+            try:
+                if '@href' in selector:
+                    attr_selector, attr = selector.split('@')
+                    elements = card.css(attr_selector)
+                    if elements:
+                        # Handle both selectolax and BeautifulSoup objects
+                        if hasattr(elements[0], 'attributes'):
+                            url = elements[0].attributes.get(attr)
+                        else:
+                            url = elements[0].get(attr)
+                        
+                        if url and ('/itm/' in url or '/p/' in url):
+                            break
+                else:
+                    elements = card.css(selector)
+                    if elements:
+                        # Handle both selectolax and BeautifulSoup objects
+                        if hasattr(elements[0], 'attributes'):
+                            url = elements[0].attributes.get('href')
+                        else:
+                            url = elements[0].get('href')
+                        
+                        if url and ('/itm/' in url or '/p/' in url):
+                            break
+            except Exception:
+                continue
+        
+        if not url:
+            return None
+        
+        # Extract source_listing_id from URL
+        source_listing_id = None
+        import re
+        itm_match = re.search(r"/itm/(\d{6,})", url)
+        if itm_match:
+            source_listing_id = itm_match.group(1)
+        else:
+            p_match = re.search(r"/p/(\d{6,})", url)
+            if p_match:
+                source_listing_id = p_match.group(1)
+        
+        if not source_listing_id:
+            return None
+        
+        # Extract title with fallbacks
+        title = None
+        title_selectors = [
+            ".s-item__title",
+            ".s-item__title span",
+            "[data-testid='item-title']",
+            "h3",
+            "h2"
+        ]
+        
+        for selector in title_selectors:
+            try:
+                elements = card.css(selector)
+                if elements:
+                    # Handle both selectolax and BeautifulSoup objects
+                    if hasattr(elements[0], 'text'):
+                        title_text = elements[0].text().strip()
+                    else:
+                        title_text = elements[0].get_text().strip()
+                    
+                    # Skip "Shop on eBay" placeholders
+                    if title_text and "Shop on eBay" not in title_text and len(title_text) > 5:
+                        title = title_text
+                        break
+            except Exception:
+                continue
+        
+        if not title:
+            return None
+        
+        # Extract price with fallbacks
+        price_text = None
+        price_selectors = [
+            ".s-item__price",
+            ".s-item__price span",
+            "[data-testid='price']",
+            ".price"
+        ]
+        
+        for selector in price_selectors:
+            try:
+                elements = card.css(selector)
+                if elements:
+                    # Handle both selectolax and BeautifulSoup objects
+                    if hasattr(elements[0], 'text'):
+                        price_text = elements[0].text().strip()
+                    else:
+                        price_text = elements[0].get_text().strip()
+                    
+                    if price_text:
+                        break
+            except Exception:
+                continue
+        
+        # Parse price and currency
+        price = None
+        currency = "USD"
+        
+        if price_text:
+            # Detect currency from symbol
+            for symbol, curr in CURRENCY_SYMBOLS.items():
+                if symbol in price_text:
+                    currency = curr
+                    break
+            
+            # Extract numeric price
+            price_match = re.search(r'[\d,]+\.?\d*', price_text.replace(',', ''))
+            if price_match:
+                try:
+                    price = float(price_match.group())
+                except ValueError:
+                    pass
+        
+        # Extract image URL
+        image_url = None
+        img_selectors = [
+            ".s-item__image-img@src",
+            ".s-item__image-img@data-src",
+            "img@src",
+            "img@data-src"
+        ]
+        
+        for selector in img_selectors:
+            try:
+                if '@' in selector:
+                    img_selector, attr = selector.split('@')
+                    elements = card.css(img_selector)
+                    if elements:
+                        # Handle both selectolax and BeautifulSoup objects
+                        if hasattr(elements[0], 'attributes'):
+                            image_url = elements[0].attributes.get(attr)
+                        else:
+                            image_url = elements[0].get(attr)
+                        
+                        if image_url:
+                            break
+            except Exception:
+                continue
+        
+        # Extract bids count
+        bids = None
+        bid_selectors = [
+            ".s-item__bidCount",
+            ".s-item__bidCount span"
+        ]
+        
+        for selector in bid_selectors:
+            try:
+                elements = card.css(selector)
+                if elements:
+                    # Handle both selectolax and BeautifulSoup objects
+                    if hasattr(elements[0], 'text'):
+                        bid_text = elements[0].text().strip()
+                    else:
+                        bid_text = elements[0].get_text().strip()
+                    
+                    bid_match = re.search(r'(\d+)', bid_text)
+                    if bid_match:
+                        bids = int(bid_match.group(1))
+                        break
+            except Exception:
+                continue
+        
+        # Extract ended date for sold items
+        ended_at = None
+        if mode == "sold":
+            date_selectors = [
+                ".s-item__ended-date",
+                ".s-item__ended-date span"
+            ]
+            
+            for selector in date_selectors:
+                try:
+                    elements = card.css(selector)
+                    if elements:
+                        # Handle both selectolax and BeautifulSoup objects
+                        if hasattr(elements[0], 'text'):
+                            date_text = elements[0].text().strip()
+                        else:
+                            date_text = elements[0].get_text().strip()
+                        
+                        # Try to parse common date formats
+                        if "Sold" in date_text:
+                            # Extract date part after "Sold"
+                            date_part = date_text.split("Sold")[-1].strip()
+                            # Simple date parsing (you might want to use dateutil for more robust parsing)
+                            ended_at = date_part
+                            break
+                except Exception:
+                    continue
+        
+        # Extract shipping info
+        shipping_text = None
+        shipping_selectors = [
+            ".s-item__shipping",
+            ".s-item__shipping span"
+        ]
+        
+        for selector in shipping_selectors:
+            try:
+                elements = card.css(selector)
+                if elements:
+                    # Handle both selectolax and BeautifulSoup objects
+                    if hasattr(elements[0], 'text'):
+                        shipping_text = elements[0].text().strip()
+                    else:
+                        shipping_text = elements[0].get_text().strip()
+                    
+                    if shipping_text:
+                        break
+            except Exception:
+                continue
+        
+        # Calculate total price
+        total_price = price
+        if shipping_text and price:
+            # Try to extract shipping cost
+            shipping_match = re.search(r'[\d,]+\.?\d*', shipping_text.replace(',', ''))
+            if shipping_match:
+                try:
+                    shipping_cost = float(shipping_match.group())
+                    if shipping_cost > 0:
+                        total_price = price + shipping_cost
+                except ValueError:
+                    pass
+        
+        # Build item
+        item = {
+            "title": title,
+            "raw_title": title,
+            "price": price,
+            "currency": currency,
+            "total_price": total_price,
+            "source": "ebay",
+            "url": url,
+            "source_listing_id": source_listing_id,
+            "sold": mode == "sold",
+            "ended_at": ended_at,
+            "image_url": image_url,
+            "bids": bids,
+            "raw_query": query
+        }
+        
+        return item
+        
+    except Exception as e:
+        print(f"[scraper] Error parsing card: {e}")
+        return None
 
 if __name__ == "__main__":
     # Get port from environment (Railway sets PORT)
