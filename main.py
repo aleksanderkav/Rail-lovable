@@ -82,6 +82,48 @@ def validate_edge_function_payload(items: List[Dict[str, Any]]) -> List[Dict[str
         validated_items.append(validated_item)
     return validated_items
 
+async def post_item_to_edge_function(item: Dict[str, Any], query: str) -> tuple[int, str]:
+    """Post a single item to Edge Function with per-item fallback format"""
+    service_role_key = get_service_role_key()
+    function_secret = get_function_secret()
+    supabase_url = get_supabase_url()
+    
+    # Build the Edge Function URL
+    ef_url = f"{supabase_url}/functions/v1/ai-parser"
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    
+    if service_role_key:
+        headers["Authorization"] = f"Bearer {service_role_key}"
+    if function_secret:
+        headers["x-function-secret"] = function_secret
+    
+    # Per-item payload with safe fallbacks
+    payload = {
+        "title": item.get("title") or item.get("raw_title") or query or "",
+        "url": item.get("url"),
+        "query": query,
+        "raw_query": query,
+        "source": item.get("source") or "ebay",
+        "price": item.get("price") if isinstance(item.get("price"), (int, float)) else (float(item.get("price")) if item.get("price") else None),
+        "currency": item.get("currency") or "USD",
+        "ended_at": item.get("ended_at"),
+        "source_listing_id": item.get("id"),
+        "sold": item.get("sold") is True
+    }
+    
+    # Remove None values
+    payload = {k: v for k, v in payload.items() if v is not None}
+    
+    try:
+        response = await http_client.post(ef_url, headers=headers, json=payload)
+        return response.status_code, response.text
+    except Exception as e:
+        return 500, str(e)
+
 # Fallback parse_title function
 # def safe_parse_title(t: str):
 #     if normalizer and hasattr(normalizer, "parse_title"):
@@ -707,6 +749,59 @@ async def diag_ef(ping: Optional[str] = None):
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }, status_code=500)
 
+@app.post("/admin/merge-cards")
+async def admin_merge_cards(request: Request):
+    """Admin endpoint to proxy merge-cards requests to Edge Function"""
+    trace_id = str(uuid.uuid4())[:8]
+    client_ip = request.client.host if request.client else "unknown"
+    
+    print(f"[api] /admin/merge-cards called from {client_ip} (trace: {trace_id})")
+    
+    try:
+        # Get request body
+        body = await request.json()
+        
+        # Prepare merge-cards payload
+        merge_payload = {
+            "dryRun": body.get("dryRun", False)
+        }
+        
+        # Call merge-cards Edge Function
+        service_role_key = get_service_role_key()
+        function_secret = get_function_secret()
+        supabase_url = get_supabase_url()
+        
+        ef_url = f"{supabase_url}/functions/v1/merge-cards"
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        
+        if service_role_key:
+            headers["Authorization"] = f"Bearer {service_role_key}"
+        if function_secret:
+            headers["x-function-secret"] = function_secret
+        
+        print(f"[api] Calling merge-cards EF: {ef_url} (trace: {trace_id})")
+        
+        response = await http_client.post(ef_url, headers=headers, json=merge_payload)
+        
+        return JSONResponse({
+            "ok": response.status_code < 400,
+            "status": response.status_code,
+            "body": response.text,
+            "trace_id": trace_id
+        })
+        
+    except Exception as e:
+        print(f"[api] /admin/merge-cards error: {e} (trace: {trace_id})")
+        return JSONResponse({
+            "ok": False,
+            "error": str(e),
+            "trace_id": trace_id
+        }, status_code=500)
+
 @app.post("/smoketest")
 async def smoketest():
     """Quick connectivity test with minimal scrape"""
@@ -775,6 +870,13 @@ async def scrape_now_options_trailing():
 @app.options("/normalize-test")
 async def normalize_test_options():
     """Handle CORS preflight for /normalize-test"""
+    # CORSMiddleware will add headers, but we ensure 200 with bodyless response
+    from fastapi.responses import Response
+    return Response(status_code=200)
+
+@app.options("/admin/merge-cards")
+async def admin_merge_cards_options():
+    """Handle CORS preflight for /admin/merge-cards"""
     # CORSMiddleware will add headers, but we ensure 200 with bodyless response
     from fastapi.responses import Response
     return Response(status_code=200)
@@ -930,6 +1032,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                         print(f"[api] DEBUG: First item raw_title field: '{debug_item.get('raw_title', 'MISSING')}'")
                         print(f"[api] DEBUG: First item keys: {sorted(debug_item.keys())}")
                     
+                    # Try batch first
                     ef_status, ef_body = await asyncio.wait_for(
                         post_to_edge_function(ef_payload),
                         timeout=EF_TIMEOUT
@@ -939,12 +1042,61 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                     print(f"[api] EF result: status={ef_status}, body={ef_body[:200] if ef_body else '<no-body>'}")
                     ef_time = time.time() - ef_start
                     
+                    # Check if batch failed and implement per-item fallback
+                    if ef_status >= 400 or (ef_body and ef_body.startswith('{"ok":false')):
+                        print(f"[api] Batch EF failed (status: {ef_status}) - falling back to per-item ingestion (trace: {trace_id})")
+                        
+                        # Per-item fallback
+                        per_item_start = time.time()
+                        per_item_results = []
+                        
+                        # Process items concurrently with individual timeouts
+                        async def process_item(item):
+                            try:
+                                status, body = await asyncio.wait_for(
+                                    post_item_to_edge_function(item, query),
+                                    timeout=EF_TIMEOUT
+                                )
+                                return {"status": "fulfilled", "value": {"status": status, "body": body}}
+                            except asyncio.TimeoutError:
+                                return {"status": "rejected", "reason": "timeout"}
+                            except Exception as e:
+                                return {"status": "rejected", "reason": str(e)}
+                        
+                        # Process all items concurrently
+                        tasks = [process_item(item) for item in ef_payload["items"]]
+                        per_item_results = await asyncio.gather(*tasks, return_exceptions=True)
+                        
+                        per_item_time = time.time() - per_item_start
+                        
+                        # Analyze per-item results
+                        accepted = sum(1 for r in per_item_results if r.get("status") == "fulfilled" and r.get("value", {}).get("status") < 400)
+                        first_good = next((r for r in per_item_results if r.get("status") == "fulfilled" and r.get("value", {}).get("status") < 400), None)
+                        
+                        # Log per-item summary
+                        print(f"[api] Per-item fallback completed in {per_item_time:.2f}s (trace: {trace_id})")
+                        print(f"[api] Per-item results: {accepted}/{len(per_item_results)} accepted")
+                        
+                        if first_good:
+                            first_good_value = first_good["value"]
+                            print(f"[api] First successful item: status={first_good_value.get('status')}, body={first_good_value.get('body', '')[:100]}")
+                        
+                        # Update status for response
+                        ef_status = 207 if accepted > 0 else 400  # 207 = Multi-Status
+                        ef_body = f"Per-item fallback: {accepted}/{len(per_item_results)} accepted"
+                        external_ok = accepted > 0
+                        
+                        # Log final ingest summary
+                        print(f"[api] ingest summary: {{mode:'per-item', accepted:{accepted}, firstIds:{first_good.get('value', {}) if first_good else None}}} (trace: {trace_id})")
+                    else:
+                        # Batch succeeded
+                        external_ok = ef_status == 200
+                        print(f"[api] ingest summary: {{mode:'batch', accepted:{len(ef_payload['items'])}, firstIds:null}} (trace: {trace_id})")
+                    
                     # Truncate body for logging (max 300 chars)
                     ef_body_truncated = ef_body[:300] + "..." if len(ef_body) > 300 else ef_body
                     print(f"[api] Step 3: Edge Function completed in {ef_time:.2f}s (status: {ef_status}) (trace: {trace_id})")
                     print(f"[api] Edge Function response: {ef_body_truncated}")
-                    
-                    external_ok = ef_status == 200
                     
                 except asyncio.TimeoutError:
                     print(f"[api] WARNING: Edge Function timeout ({EF_TIMEOUT}s) - continuing with partial results (trace: {trace_id})")
@@ -964,6 +1116,8 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
             
             # Prepare response
             total_time = time.time() - scraper_start
+            
+            # Enhanced response with fallback information
             response = {
                 "ok": True,
                 "items": [item.dict() for item in normalized_data.items],
@@ -972,6 +1126,27 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                 "efBody": ef_body,
                 "trace": trace_id
             }
+            
+            # Add fallback information if per-item mode was used
+            if ef_status == 207:  # Multi-Status (per-item fallback)
+                # Parse the ef_body to extract accepted count
+                import re
+                match = re.search(r'(\d+)/(\d+) accepted', ef_body)
+                if match:
+                    accepted = int(match.group(1))
+                    total = int(match.group(2))
+                    response.update({
+                        "ingestMode": "per-item",
+                        "accepted": accepted,
+                        "total": total,
+                        "firstIds": None  # Could be enhanced to parse actual IDs from responses
+                    })
+            else:
+                response.update({
+                    "ingestMode": "batch",
+                    "accepted": len(normalized_data.items) if external_ok else 0,
+                    "total": len(normalized_data.items)
+                })
             
             print(f"[api] scrape-now q=\"{query}\" items={len(normalized_data.items)} dur={total_time:.1f}s (trace: {trace_id})")
             return JSONResponse(
