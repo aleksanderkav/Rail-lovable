@@ -903,7 +903,13 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                     # Convert items to dict and validate for Edge Function
                     item_dicts = [item.dict() for item in normalized_data.items]
                     validated_items = validate_edge_function_payload(item_dicts)
-                    ef_payload["items"] = validated_items
+                    
+                    # The Edge Function expects a specific structure - ensure each item has the required fields
+                    # Based on the error "Missing title", it seems to expect items at the root level
+                    ef_payload = {
+                        "query": query,
+                        "items": validated_items
+                    }
                     
                     # Log Edge Function call details
                     print(f"[api] Posting to EF: items={len(ef_payload['items'])}, query_present={query is not None}")
@@ -912,6 +918,17 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                     # Log BEFORE Edge Function call
                     first_item = ef_payload['items'][0] if ef_payload['items'] else {}
                     print(f"[api] EF call: count={len(ef_payload['items'])}, hasQuery={query is not None}, firstItemKeys={list(first_item.keys())}")
+                    
+                    # Also log the actual payload structure being sent
+                    print(f"[api] EF payload structure: {list(ef_payload.keys())}")
+                    print(f"[api] EF first item sample: {dict(list(first_item.items())[:5])}")
+                    
+                    # Debug: Log the exact payload being sent (first item only)
+                    if ef_payload['items']:
+                        debug_item = ef_payload['items'][0]
+                        print(f"[api] DEBUG: First item title field: '{debug_item.get('title', 'MISSING')}'")
+                        print(f"[api] DEBUG: First item raw_title field: '{debug_item.get('raw_title', 'MISSING')}'")
+                        print(f"[api] DEBUG: First item keys: {sorted(debug_item.keys())}")
                     
                     ef_status, ef_body = await asyncio.wait_for(
                         post_to_edge_function(ef_payload),
