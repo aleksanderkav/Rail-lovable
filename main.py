@@ -343,11 +343,57 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
     """Normalize scraper response into expected format with enriched fields"""
     items = []
     
+    # Helper function to extract URL and listing ID from various field names
+    def extract_url_and_id(item: Dict[str, Any]) -> tuple[str, str]:
+        """Extract URL and source_listing_id from item data"""
+        # Try various URL field names (eBay API, HTML scraping, etc.)
+        url = None
+        if "itemWebUrl" in item:
+            url = item["itemWebUrl"]
+        elif "viewItemURL" in item:
+            url = item["viewItemURL"]
+        elif "url" in item:
+            url = item["url"]
+        elif "link" in item:
+            url = item["link"]
+        elif "href" in item:
+            url = item["href"]
+        
+        # Try various ID field names
+        source_listing_id = None
+        if "itemId" in item:
+            source_listing_id = str(item["itemId"])
+        elif "id" in item:
+            source_listing_id = str(item["id"])
+        elif "listing_id" in item:
+            source_listing_id = str(item["listing_id"])
+        elif "ebay_id" in item:
+            source_listing_id = str(item["ebay_id"])
+        
+        # If we have a URL but no ID, try to extract ID from URL
+        if url and not source_listing_id:
+            # Common eBay URL patterns
+            if "ebay.com/itm/" in url:
+                # Extract ID from https://www.ebay.com/itm/123456789012
+                parts = url.split("/itm/")
+                if len(parts) > 1:
+                    source_listing_id = parts[1].split("?")[0].split("#")[0]
+            elif "ebay.com/p/" in url:
+                # Extract ID from https://www.ebay.com/p/123456789012
+                parts = url.split("/p/")
+                if len(parts) > 1:
+                    source_listing_id = parts[1].split("?")[0].split("#")[0]
+        
+        return url, source_listing_id
+    
     # Handle different response formats
     if "items" in scraper_data and isinstance(scraper_data["items"], list):
         # Already has items array
         for item in scraper_data["items"]:
             if isinstance(item, dict):
+                # Extract URL and listing ID
+                url, source_listing_id = extract_url_and_id(item)
+                
                 # Determine if item is sold based on various indicators
                 sold = None
                 if "sold" in item:
@@ -376,8 +422,8 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     raw_title=title,
                     raw_description=item.get("description"),
                     source=item.get("source", "ebay"),
-                    source_listing_id=item.get("id"),
-                    url=item.get("url"),
+                    source_listing_id=source_listing_id,
+                    url=url,
                     
                     # Pricing and availability
                     currency=item.get("currency"),
@@ -408,7 +454,7 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     
                     # Legacy fields for backward compatibility
                     title=title,
-                    id=item.get("id"),
+                    id=source_listing_id,  # Use extracted source_listing_id
                     sold=sold,
                     image_url=item.get("image_url"),
                     shipping_price=item.get("shipping_price"),
@@ -430,13 +476,16 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                 title = scraper_data.get("query", "")
                 # parsed_hints = safe_parse_title(title) if title else None
                 
+                # Extract URL and ID from price entry if available
+                url, source_listing_id = extract_url_and_id(entry)
+                
                 items.append(Item(
                     # Raw listing details (for AI extraction)
                     raw_title=title,
                     raw_description=None,
                     source="ebay",
-                    source_listing_id=None,
-                    url=None,
+                    source_listing_id=source_listing_id,
+                    url=url,
                     
                     # Pricing and availability
                     currency="USD",
@@ -467,7 +516,7 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     
                     # Legacy fields for backward compatibility
                     title=title,
-                    id=None,
+                    id=source_listing_id,  # Use extracted source_listing_id
                     sold=False,  # Price entries are typically active listings
                     image_url=None,
                     shipping_price=None,
@@ -494,8 +543,8 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
                     raw_title=title,
                     raw_description=None,
                     source="ebay",
-                    source_listing_id=None,
-                    url=None,
+                    source_listing_id=None,  # No ID available for simple price arrays
+                    url=None,  # No URL available for simple price arrays
                     
                     # Pricing and availability
                     currency="USD",
@@ -552,10 +601,8 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
             raw_title=title,
             raw_description=None,
             source="ebay",
-            source_listing_id=None,
-            url=None,
-            
-            # Pricing and availability
+            source_listing_id=None,  # No ID available for default items
+            url=None,  # No URL available for default items
             currency="USD",
             price=scraper_data.get("average"),
             ended_at=None,
