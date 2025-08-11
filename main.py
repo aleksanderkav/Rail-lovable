@@ -389,10 +389,34 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
         # If no URL/ID found, log the full item for diagnosis
         if not url and not source_listing_id:
             print(f"[api] WARNING: No URL or ID found in item. Full item data:")
-            print(f"[api] Item keys: {list(item.keys())}")
-            print(f"[api] Item sample values: {dict(list(item.items())[:5])}")
+            print(f"[api] Item keys: {list(card.keys()) if hasattr(card, 'keys') else 'No keys method'}")
+            try:
+                if hasattr(card, 'text'):
+                    sample_text = card.text()[:200]
+                else:
+                    sample_text = card.get_text()[:200]
+                print(f"[api] Item sample text: {sample_text}")
+            except Exception:
+                print(f"[api] Could not extract sample text")
         
-        return url, source_listing_id
+        # Build item - include even if URL/ID missing for logging purposes
+        item = {
+            "title": title,
+            "raw_title": title,
+            "price": price,
+            "currency": currency,
+            "total_price": total_price,
+            "source": "ebay",
+            "url": url,
+            "source_listing_id": source_listing_id,
+            "sold": mode == "sold",
+            "ended_at": ended_at,
+            "image_url": image_url,
+            "bids": bids,
+            "raw_query": query
+        }
+        
+        return item
     
     # Handle different response formats
     if "items" in scraper_data and isinstance(scraper_data["items"], list):
@@ -2531,10 +2555,33 @@ def parse_ebay_listings(html: str, query: str, mode: str) -> List[Dict[str, Any]
             if item:
                 items.append(item)
         except Exception as e:
-            print(f"[scraper] Error parsing card {i}: {e}")
+            print(f"[api] Error parsing card {i}: {e}")
             continue
     
-    print(f"[scraper] Successfully parsed {len(items)} valid items from {len(cards)} cards")
+    # Log comprehensive extraction results
+    total_cards = len(cards)
+    parsed_items = len(items)
+    with_url = sum(1 for item in items if item.get("url"))
+    with_id = sum(1 for item in items if item.get("source_listing_id"))
+    
+    print(f"[api] Parsing summary: {parsed_items}/{total_cards} cards parsed successfully")
+    print(f"[api] URL extraction: {with_url}/{parsed_items} items have URL")
+    print(f"[api] ID extraction: {with_id}/{parsed_items} items have source_listing_id")
+    
+    if parsed_items == 0:
+        print(f"[api] WARNING: No items parsed successfully. First 2 raw card HTML lengths:")
+        for i, card in enumerate(cards[:2]):
+            try:
+                if hasattr(card, 'text'):
+                    card_text = card.text()
+                else:
+                    card_text = card.get_text()
+                print(f"[api] Card {i}: {len(card_text)} chars")
+                print(f"[api] Selectors used: {selectors}")
+            except Exception as e:
+                print(f"[api] Card {i}: Error getting text: {e}")
+    
+    print(f"[api] Successfully parsed {len(items)} valid items from {len(cards)} cards")
     return items
 
 def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
@@ -2546,12 +2593,14 @@ def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
             "a.s-item__link@href",
             "a[href*='/itm/']@href",
             "a[href*='/p/']@href",
-            "a@href"
+            "a@href",
+            "*[data-viewitemurl]@data-viewitemurl",
+            "*[data-href]@data-href"
         ]
         
         for selector in url_selectors:
             try:
-                if '@href' in selector:
+                if '@' in selector:
                     attr_selector, attr = selector.split('@')
                     elements = card.css(attr_selector)
                     if elements:
@@ -2577,21 +2626,64 @@ def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
             except Exception:
                 continue
         
-        if not url:
-            return None
-        
-        # Extract source_listing_id from URL
+        # Extract source_listing_id with multiple strategies
         source_listing_id = None
-        import re
-        itm_match = re.search(r"/itm/(\d{6,})", url)
-        if itm_match:
-            source_listing_id = itm_match.group(1)
-        else:
-            p_match = re.search(r"/p/(\d{6,})", url)
-            if p_match:
-                source_listing_id = p_match.group(1)
         
+        # Strategy 1: Extract from URL if we found one
+        if url:
+            # Try /itm/ pattern first (most common)
+            itm_match = re.search(r"/itm/(\d{6,})", url)
+            if itm_match:
+                source_listing_id = itm_match.group(1)
+                print(f"[api] Extracted ID from eBay URL /itm/: {source_listing_id}")
+            else:
+                # Try /p/ pattern
+                p_match = re.search(r"/p/(\d{6,})", url)
+                if p_match:
+                    source_listing_id = p_match.group(1)
+                    print(f"[api] Extracted ID from eBay URL /p/: {source_listing_id}")
+                else:
+                    # Try query parameters
+                    query_match = re.search(r"[?&](?:itm|itemId)=(\d{6,})", url)
+                    if query_match:
+                        source_listing_id = query_match.group(1)
+                        print(f"[api] Extracted ID from URL query param: {source_listing_id}")
+        
+        # Strategy 2: Check data attributes that often carry the ID
         if not source_listing_id:
+            id_attributes = ["data-id", "itemid", "ebay-id", "listingid", "data-itemid"]
+            for attr in id_attributes:
+                try:
+                    elements = card.css(f"[{attr}]")
+                    if elements:
+                        # Handle both selectolax and BeautifulSoup objects
+                        if hasattr(elements[0], 'attributes'):
+                            item_id = elements[0].attributes.get(attr)
+                        else:
+                            item_id = elements[0].get(attr)
+                        
+                        if item_id and re.match(r'\d{6,}', str(item_id)):
+                            source_listing_id = str(item_id)
+                            print(f"[api] Extracted ID from {attr} attribute: {source_listing_id}")
+                            break
+                except Exception:
+                    continue
+        
+        # Strategy 3: Check for ID in other common fields
+        if not source_listing_id:
+            id_fields = ["source_listing_id", "itemId", "id", "listing_id", "ebay_id"]
+            for id_field in id_fields:
+                try:
+                    # This would be for items that already have the ID field populated
+                    if hasattr(card, 'get') and card.get(id_field):
+                        source_listing_id = str(card.get(id_field))
+                        if re.match(r'\d{6,}', source_listing_id):
+                            print(f"[api] Found ID in {id_field} field: {source_listing_id}")
+                            break
+                except Exception:
+                    continue
+        
+        if not url:
             return None
         
         # Extract title with fallbacks
@@ -2802,6 +2894,105 @@ def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         print(f"[scraper] Error parsing card: {e}")
         return None
+
+@app.get("/admin/diag-ef")
+async def admin_diag_ef(request: Request):
+    """Quick diagnostics endpoint to test Edge Function connectivity via ingest path"""
+    trace_id = str(uuid.uuid4())[:8]
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Check admin token
+    admin_token = request.headers.get("X-Admin-Token")
+    expected_token = get_admin_proxy_token()
+    
+    if not admin_token or admin_token != expected_token:
+        return JSONResponse(
+            content={"error": "Unauthorized"},
+            status_code=401,
+            headers={"x-trace-id": trace_id}
+        )
+    
+    print(f"[api] /admin/diag-ef called from {client_ip} (trace: {trace_id})")
+    
+    try:
+        # Create a health check request with dryRun
+        health_request = ScrapeRequest(query="health-check", dryRun=True)
+        
+        # Call the scrape-now endpoint (same code path as real ingest)
+        response = await scrape_now(health_request, request)
+        
+        # Extract status from response
+        if hasattr(response, 'status_code'):
+            ef_status = response.status_code
+            if ef_status < 400:
+                return JSONResponse(
+                    content={
+                        "ok": True,
+                        "ef_status": ef_status,
+                        "trace": trace_id
+                    },
+                    headers={
+                        "x-trace-id": trace_id,
+                        "Content-Type": "application/json"
+                    }
+                )
+            else:
+                return JSONResponse(
+                    content={
+                        "ok": False,
+                        "detail": f"HTTP {ef_status}",
+                        "ef_status": ef_status,
+                        "trace": trace_id
+                    },
+                    headers={
+                        "x-trace-id": trace_id,
+                        "Content-Type": "application/json"
+                    },
+                    status_code=200  # Always 200 to prevent UI crashes
+                )
+        else:
+            return JSONResponse(
+                content={
+                    "ok": False,
+                    "detail": "Invalid response format",
+                    "ef_status": 0,
+                    "trace": trace_id
+                },
+                headers={
+                    "x-trace-id": trace_id,
+                    "Content-Type": "application/json"
+                },
+                status_code=200  # Always 200 to prevent UI crashes
+            )
+        
+    except Exception as e:
+        print(f"[api] /admin/diag-ef error: {e} (trace: {trace_id})")
+        return JSONResponse(
+            content={
+                "ok": False,
+                "detail": str(e),
+                "ef_status": 0,
+                "trace": trace_id
+            },
+            headers={
+                "x-trace-id": trace_id,
+                "Content-Type": "application/json"
+            },
+            status_code=200  # Always 200 to prevent UI crashes
+        )
+
+@app.options("/admin/diag-ef")
+async def admin_diag_ef_options():
+    """CORS preflight for admin diag-ef endpoint"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",
+            "Access-Control-Allow-Methods": "GET,OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type,X-Admin-Token",
+            "Access-Control-Max-Age": "86400"
+        }
+    )
 
 if __name__ == "__main__":
     # Get port from environment (Railway sets PORT)
