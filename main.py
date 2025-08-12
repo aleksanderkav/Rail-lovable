@@ -1622,19 +1622,33 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                 print(f"[fetch] ebay GET active mode q='{query}' trace={trace_id}")
                 active_items = await scrape_ebay(query, mode="active")
                 print(f"[api] Active listings: {len(active_items)} items (trace: {trace_id})")
+                if active_items:
+                    print(f"[api] First active item sample: url={active_items[0].get('url')}, id={active_items[0].get('source_listing_id')} trace={trace_id}")
             except Exception as e:
                 print(f"[api] Active listings failed: {e} (trace: {trace_id})")
+                print(f"[api] Active listings exception type: {type(e).__name__} trace={trace_id}")
                 active_items = []
             
             try:
                 print(f"[fetch] ebay GET sold mode q='{query}' trace={trace_id}")
                 sold_items = await scrape_ebay(query, mode="sold")
                 print(f"[api] Sold listings: {len(sold_items)} items (trace: {trace_id})")
+                if sold_items:
+                    print(f"[api] First sold item sample: url={sold_items[0].get('url')}, id={sold_items[0].get('source_listing_id')} trace={trace_id}")
             except Exception as e:
                 print(f"[api] Sold listings failed: {e} (trace: {trace_id})")
+                print(f"[api] Sold listings exception type: {type(e).__name__} trace={trace_id}")
                 sold_items = []
             
             # merge + dedupe by source_listing_id or url lowercased
+            print(f"[parse] Processing items: active={len(active_items)} sold={len(sold_items)} trace={trace_id}")
+            
+            # CRITICAL: Check if we got any items from the scraper
+            if not active_items and not sold_items:
+                print(f"[instant] CRITICAL: No items returned from eBay scraper - this indicates a problem trace={trace_id}")
+                print(f"[instant] Active items: {len(active_items)}, Sold items: {len(sold_items)} trace={trace_id}")
+                # This should not happen - the debug endpoint works, so something is wrong with the instant path
+            
             merged = []
             skipped = {"no_url": 0, "no_id": 0, "duplicate": 0}
             seen = set()
@@ -2617,6 +2631,8 @@ async def scrape_ebay(query: str, mode: str = "active") -> List[Dict[str, Any]]:
     import random
     import time
     
+    print(f"[scraper] ENTRY: scrape_ebay called with query='{query}' mode='{mode}'")
+    
     # Build eBay URL based on mode
     if mode == "active":
         url = f"https://www.ebay.com/sch/i.html?_nkw={query}&_sop=10&rt=nc"
@@ -2672,7 +2688,9 @@ async def scrape_ebay(query: str, mode: str = "active") -> List[Dict[str, Any]]:
                 raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
             
             print(f"[fetch] ebay GET {url} status={response.status_code} bytes={len(response.content)}")
-            return parse_ebay_listings(response.text, query, mode)
+            result = parse_ebay_listings(response.text, query, mode)
+            print(f"[scraper] EXIT: scrape_ebay returning {len(result)} items for mode='{mode}'")
+            return result
             
         except asyncio.TimeoutError:
             print(f"[scraper] Timeout on attempt {attempt + 1}")
