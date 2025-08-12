@@ -252,11 +252,11 @@ app = FastAPI(title="Rail-lovable Scraper", version="1.0.0")
 # Global CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # we validate in our own dependency
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*", "X-Admin-Token", "Content-Type"],
     expose_headers=["x-trace-id"],
-    allow_credentials=False,
+    allow_credentials=True,
 )
 
 # Create router for main endpoints
@@ -272,22 +272,22 @@ def get_ef_url():
 # --- BEGIN CORS GUARD ---
 # Read allowed origins from environment variable
 def get_allowed_origins():
-    env_origins = os.getenv("ALLOW_ORIGINS", "").strip()
-    if env_origins:
+    raw_origins = os.getenv("ALLOW_ORIGINS", "").strip()
+    if raw_origins:
         # Parse comma-separated origins from environment
-        origins = {origin.strip() for origin in env_origins.split(",") if origin.strip()}
-        print(f"[api] CORS origins from env: {origins}")
+        origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
+        print(f"✅ Loaded ALLOW_ORIGINS: {origins}")
         return origins
     else:
         # Default origins if env not set
-        default_origins = {
+        default_origins = [
             "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",
             "https://id-preview--ed2352f3-a196-4248-bcf1-3cf010ca8901.lovable.app",
             "https://card-pulse-watch.lovable.app",
             "http://localhost:3000",
             "http://localhost:5173",
-        }
-        print(f"[api] CORS using default origins: {default_origins}")
+        ]
+        print(f"✅ Loaded ALLOW_ORIGINS (defaults): {default_origins}")
         return default_origins
 
 ALLOWED_ORIGINS = get_allowed_origins()
@@ -297,6 +297,7 @@ def _is_allowed_origin(origin: str | None) -> bool:
         return False
     if origin in ALLOWED_ORIGINS:
         return True
+    # Also accept any lovable preview domains
     return origin.endswith(".lovable.app") or origin.endswith(".lovableproject.com")
 
 def cors_guard(origin: str = Header(None), response: Response = None, request: Request = None):
