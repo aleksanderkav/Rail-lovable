@@ -1609,7 +1609,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
     # Check for instant mode (from query param or header)
     instant_mode = request.instant or http_request.headers.get("X-Instant") == "1"
     if instant_mode:
-        print(f"[api] INSTANT mode - running scraper immediately (trace: {trace_id})")
+        print(f"[instant] REAL scraper start q='{query}' trace={trace_id}")
         
         try:
             t0 = time.time()
@@ -1619,6 +1619,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
             sold_items = []
             
             try:
+                print(f"[fetch] ebay GET active mode q='{query}' trace={trace_id}")
                 active_items = await scrape_ebay(query, mode="active")
                 print(f"[api] Active listings: {len(active_items)} items (trace: {trace_id})")
             except Exception as e:
@@ -1626,6 +1627,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                 active_items = []
             
             try:
+                print(f"[fetch] ebay GET sold mode q='{query}' trace={trace_id}")
                 sold_items = await scrape_ebay(query, mode="sold")
                 print(f"[api] Sold listings: {len(sold_items)} items (trace: {trace_id})")
             except Exception as e:
@@ -1634,17 +1636,38 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
             
             # merge + dedupe by source_listing_id or url lowercased
             merged = []
+            skipped = {"no_url": 0, "no_id": 0, "duplicate": 0}
             seen = set()
+            
             for lst in (active_items, sold_items):
                 for it in lst or []:
+                    # Check if item has required fields
+                    has_url = bool(it.get("url"))
+                    has_id = bool(it.get("source_listing_id"))
+                    
+                    if not has_url:
+                        skipped["no_url"] += 1
+                        print(f"[parse] SKIP reason=no-url item={it.get('title', 'unknown')} trace={trace_id}")
+                        continue
+                    
+                    if not has_id:
+                        skipped["no_id"] += 1
+                        print(f"[parse] SKIP reason=no-id item={it.get('title', 'unknown')} trace={trace_id}")
+                        continue
+                    
+                    # Check for duplicates
                     k = (it.get("source_listing_id") or "").strip() or (it.get("url") or "").strip().lower()
-                    if not k: 
-                        merged.append(it)  # keep for diagnostics
-                    elif k not in seen:
-                        seen.add(k)
-                        merged.append(it)
+                    if k in seen:
+                        skipped["duplicate"] += 1
+                        print(f"[parse] SKIP reason=duplicate id={k} trace={trace_id}")
+                        continue
+                    
+                    # Item is valid
+                    seen.add(k)
+                    merged.append(it)
+                    print(f"[parse] ACCEPTED url={it.get('url')} id={it.get('source_listing_id')} trace={trace_id}")
             
-            print(f"[api] Merged and deduplicated: {len(merged)} items (trace: {trace_id})")
+            print(f"[parse] found_cards={len(active_items) + len(sold_items)} accepted={len(merged)} skipped={skipped} trace={trace_id}")
             
             # Prepare ingest summary but do NOT fail instant UX if ingest fails
             ingest_summary = {"accepted": 0, "total": len(merged)}
@@ -1658,13 +1681,14 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
             payload = {
                 "ok": True,
                 "items": merged,
+                "skipped": skipped,
                 "ingestSummary": ingest_summary,
                 "ingestMode": "instant-results",
                 "trace": trace_id
             }
             
             resp, trace = json_with_trace(payload, 200, trace_id)
-            print(f"[instant] ok items={len(merged)} dur_ms={int((time.time()-t0)*1000)} trace={trace}")
+            print(f"[instant] done accepted={len(merged)} skipped={skipped} dur_ms={int((time.time()-t0)*1000)} trace={trace}")
             return resp
             
         except Exception as e:
@@ -2602,6 +2626,7 @@ async def scrape_ebay(query: str, mode: str = "active") -> List[Dict[str, Any]]:
         raise ValueError(f"Invalid mode: {mode}")
     
     print(f"[scraper] Scraping eBay {mode} mode: {url}")
+    print(f"[fetch] ebay GET {url}")
     
     # Rotate User-Agent
     user_agent = random.choice(EBAY_USER_AGENTS)
@@ -2646,7 +2671,7 @@ async def scrape_ebay(query: str, mode: str = "active") -> List[Dict[str, Any]]:
             if response.status_code != 200:
                 raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
             
-            print(f"[scraper] Successfully fetched {len(response.content)} bytes")
+            print(f"[fetch] ebay GET {url} status={response.status_code} bytes={len(response.content)}")
             return parse_ebay_listings(response.text, query, mode)
             
         except asyncio.TimeoutError:
@@ -2700,7 +2725,7 @@ def parse_ebay_listings(html: str, query: str, mode: str) -> List[Dict[str, Any]
     for selector in selectors:
         cards = parser.css(selector)
         if cards:
-            print(f"[scraper] Found {len(cards)} cards with selector: {selector}")
+            print(f"[parse] found_cards={len(cards)} selector={selector}")
             break
     
     if not cards:
@@ -2728,9 +2753,8 @@ def parse_ebay_listings(html: str, query: str, mode: str) -> List[Dict[str, Any]
     with_url = sum(1 for item in items if item.get("url"))
     with_id = sum(1 for item in items if item.get("source_listing_id"))
     
-    print(f"[api] Parsing summary: {parsed_items}/{total_cards} cards parsed successfully")
-    print(f"[api] URL extraction: {with_url}/{parsed_items} items have URL")
-    print(f"[api] ID extraction: {with_id}/{parsed_items} items have source_listing_id")
+    print(f"[parse] found_cards={total_cards} parsed={parsed_items} with_url={with_url} with_id={with_id}")
+    print(f"[parse] anchors={with_url} trace={trace_id if 'trace_id' in locals() else 'unknown'}")
     
     if parsed_items == 0:
         print(f"[api] WARNING: No items parsed successfully. First 2 raw card HTML lengths:")
@@ -3200,6 +3224,54 @@ def admin_wildcard_options(rest_of_path: str, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
     return Response(status_code=200)
+
+# Debug endpoint to test eBay scraper directly
+@router.get("/debug/scrape-ebay")
+async def debug_scrape_ebay(q: str, request: Request):
+    """Debug endpoint to test eBay scraper without going through ingest"""
+    trace_id = str(uuid.uuid4())[:8]
+    print(f"[debug] /debug/scrape-ebay q='{q}' trace={trace_id}")
+    
+    try:
+        # Test both active and sold modes
+        active_items = await scrape_ebay(q, mode="active")
+        sold_items = await scrape_ebay(q, mode="sold")
+        
+        # Count items with URL and ID
+        all_items = active_items + sold_items
+        with_url = sum(1 for item in all_items if item.get("url"))
+        with_id = sum(1 for item in all_items if item.get("source_listing_id"))
+        
+        # Sample of accepted items
+        sample_items = []
+        for item in all_items[:3]:
+            if item.get("url") and item.get("source_listing_id"):
+                sample_items.append({
+                    "url": item.get("url"),
+                    "id": item.get("source_listing_id"),
+                    "title": item.get("title"),
+                    "price": item.get("price")
+                })
+        
+        return {
+            "ok": True,
+            "query": q,
+            "active_items": len(active_items),
+            "sold_items": len(sold_items),
+            "total_items": len(all_items),
+            "with_url": with_url,
+            "with_id": with_id,
+            "sample": sample_items,
+            "trace": trace_id
+        }
+        
+    except Exception as e:
+        print(f"[debug] eBay scraper failed: {e} trace={trace_id}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "trace": trace_id
+        }
 
 # Catch-all OPTIONS handler for any unmatched paths
 @app.options("/{path:path}")
