@@ -469,76 +469,23 @@ def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedRespon
     items = []
     
     # Helper function to extract URL and listing ID from various field names
-    def extract_url_and_id(item: Dict[str, Any]) -> tuple[str, str]:
+    def extract_url_and_id(entry: Dict[str, Any]) -> tuple[str | None, str | None]:
         """Extract URL and source_listing_id from item data"""
-        import re
-        
-        # Extract URL from first non-empty of: ["url","href","itemWebUrl","viewItemURL","link"]
-        url = None
-        for url_field in ["url", "href", "itemWebUrl", "viewItemURL", "link"]:
-            if url_field in item and item[url_field]:
-                url = str(item[url_field]).strip()
-                if url:
-                    print(f"[api] Found URL in {url_field}: {url}")
-                    break
-        
-        # Extract source_listing_id from first non-empty of: ["source_listing_id","itemId","id","listing_id","ebay_id"]
-        source_listing_id = None
-        for id_field in ["source_listing_id", "itemId", "id", "listing_id", "ebay_id"]:
-            if id_field in item and item[id_field]:
-                source_listing_id = str(item[id_field]).strip()
-                if source_listing_id:
-                    print(f"[api] Found ID in {id_field}: {source_listing_id}")
-                    break
-        
-        # If no ID but URL looks like an eBay item, parse with regex
-        if url and not source_listing_id:
-            # Try /itm/ pattern first (most common)
-            itm_match = re.search(r"/itm/(\d{6,})", url)
-            if itm_match:
-                source_listing_id = itm_match.group(1)
-                print(f"[api] Extracted ID from eBay URL /itm/: {source_listing_id}")
-            else:
-                # Try /p/ pattern
-                p_match = re.search(r"/p/(\d{6,})", url)
-                if p_match:
-                    source_listing_id = p_match.group(1)
-                    print(f"[api] Extracted ID from eBay URL /p/: {source_listing_id}")
-        
-        # Log final extraction result
-        print(f"[api] Final extraction result: url={url}, source_listing_id={source_listing_id}")
-        
-        # If no URL/ID found, log the full item for diagnosis
-        if not url and not source_listing_id:
-            print(f"[api] WARNING: No URL or ID found in item. Full item data:")
-            print(f"[api] Item keys: {list(card.keys()) if hasattr(card, 'keys') else 'No keys method'}")
-            try:
-                if hasattr(card, 'text'):
-                    sample_text = card.text()[:200]
-                else:
-                    sample_text = card.get_text()[:200]
-                print(f"[api] Item sample text: {sample_text}")
-            except Exception:
-                print(f"[api] Could not extract sample text")
-        
-        # Build item - include even if URL/ID missing for logging purposes
-        item = {
-            "title": title,
-            "raw_title": title,
-            "price": price,
-            "currency": currency,
-            "total_price": total_price,
-            "source": "ebay",
-            "url": url,
-            "source_listing_id": source_listing_id,
-            "sold": mode == "sold",
-            "ended_at": ended_at,
-            "image_url": image_url,
-            "bids": bids,
-            "raw_query": query
-        }
-        
-        return item
+        try:
+            url = (entry.get("url") or "").strip() or None
+            sid = (entry.get("source_listing_id") or "").strip() or None
+            
+            # fallback patterns if missing:
+            if (not sid) and url:
+                # try /itm/ or /p/ patterns
+                import re
+                m = re.search(r"/itm/(\d{6,})", url) or re.search(r"/p/(\d{6,})", url)
+                if m:
+                    sid = m.group(1)
+            
+            return (url, sid)
+        except Exception:
+            return (None, None)
     
     # Handle different response formats
     if "items" in scraper_data and isinstance(scraper_data["items"], list):
@@ -3165,6 +3112,12 @@ def ingest_items_options(response: Response):
 def admin_wildcard_options(rest_of_path: str, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
+    return Response(status_code=200)
+
+# Catch-all OPTIONS handler for any unmatched paths
+@app.options("/{path:path}")
+async def options_catch_all():
+    from fastapi import Response
     return Response(status_code=200)
 
 # Include the router with all the main endpoints
