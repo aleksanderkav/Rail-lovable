@@ -1052,7 +1052,7 @@ async def admin_merge_cards(request: Request):
             status_code=500
         )
 
-@app.post("/smoketest")
+@router.post("/smoketest")
 async def smoketest():
     """Quick connectivity test with minimal scrape"""
     trace_id = str(uuid.uuid4())[:8]
@@ -1984,20 +1984,9 @@ async def normalize_test(request: NormalizeTestRequest, http_request: Request):
             }
         )
 
-@app.options("/ingest-items")
-async def ingest_items_options():
-    """Handle CORS preflight for /ingest-items"""
-    return JSONResponse(
-        content={"ok": True},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-            "X-Trace-Id": str(uuid.uuid4())[:8]
-        }
-    )
 
-@app.post("/ingest-items")
+
+@router.post("/ingest-items")
 async def ingest_items(request: IngestItemsRequest, http_request: Request):
     """Forward normalized items to Supabase Edge Function"""
     trace_id = str(uuid.uuid4())[:8]
@@ -2204,12 +2193,7 @@ async def admin_diag_db(request: Request):
             status_code=200  # Always 200 to prevent UI crashes
         )
 
-@app.options("/admin/diag-db")
-async def admin_diag_db_options(response: Response):
-    """CORS preflight for admin diag-db endpoint"""
-    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,X-Admin-Token"
-    return Response(status_code=200)
+
 
 @router.get("/admin/health", dependencies=[Depends(cors_guard)])
 async def admin_health(request: Request):
@@ -2365,12 +2349,7 @@ async def admin_health(request: Request):
             status_code=200  # Always 200 to prevent UI crashes
         )
 
-@app.options("/admin/health")
-async def admin_health_options(response: Response):
-    """CORS preflight for admin health endpoint"""
-    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,X-Admin-Token"
-    return Response(status_code=200)
+
 
 # Global health check cache
 _health_cache = {
@@ -2959,7 +2938,7 @@ async def admin_diag_ef(request: Request):
                 "ok": False,
                 "detail": str(e),
                 "ef_status": 0,
-                "trace": trace_id
+                "trace_id": trace_id
             },
             headers={
                 "x-trace-id": trace_id,
@@ -2968,15 +2947,16 @@ async def admin_diag_ef(request: Request):
             status_code=200  # Always 200 to prevent UI crashes
         )
 
-@app.options("/admin/diag-ef")
-async def admin_diag_ef_options(response: Response):
-    """CORS preflight for admin diag-ef endpoint"""
-    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,X-Admin-Token"
+
+
+@router.options("/ingest-items", dependencies=[Depends(cors_guard)])
+def ingest_items_options(response: Response):
+    response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
     return Response(status_code=200)
 
-@app.options("/admin/{rest_of_path:path}", dependencies=[Depends(cors_guard)])
-def admin_options(rest_of_path: str, response: Response):
+@router.options("/admin/{rest_of_path:path}", dependencies=[Depends(cors_guard)])
+def admin_wildcard_options(rest_of_path: str, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
     return Response(status_code=200)
