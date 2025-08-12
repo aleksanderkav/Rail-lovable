@@ -177,7 +177,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # we validate in our own dependency
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-Admin-Token", "x-function-secret"],
+    allow_headers=["*", "X-Admin-Token", "Content-Type"],
     expose_headers=["x-trace-id"],
     allow_credentials=False,
 )
@@ -193,13 +193,27 @@ def get_ef_url():
     return os.getenv("SUPABASE_FUNCTION_URL", "").strip()
 
 # --- BEGIN CORS GUARD ---
-ALLOWED_ORIGINS = {
-    "https://card-pulse-watch.lovable.app",
-    "https://id-preview--ed2352f3-a196-4248-bcf1-3cf010ca8901.lovable.app",
-    "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",
-    "http://localhost:3000",
-    "http://localhost:5173",
-}
+# Read allowed origins from environment variable
+def get_allowed_origins():
+    env_origins = os.getenv("ALLOW_ORIGINS", "").strip()
+    if env_origins:
+        # Parse comma-separated origins from environment
+        origins = {origin.strip() for origin in env_origins.split(",") if origin.strip()}
+        print(f"[api] CORS origins from env: {origins}")
+        return origins
+    else:
+        # Default origins if env not set
+        default_origins = {
+            "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",
+            "https://id-preview--ed2352f3-a196-4248-bcf1-3cf010ca8901.lovable.app",
+            "https://card-pulse-watch.lovable.app",
+            "http://localhost:3000",
+            "http://localhost:5173",
+        }
+        print(f"[api] CORS using default origins: {default_origins}")
+        return default_origins
+
+ALLOWED_ORIGINS = get_allowed_origins()
 
 def _is_allowed_origin(origin: str | None) -> bool:
     if not origin:
@@ -208,14 +222,18 @@ def _is_allowed_origin(origin: str | None) -> bool:
         return True
     return origin.endswith(".lovable.app") or origin.endswith(".lovableproject.com")
 
-def cors_guard(origin: str = Header(None), response: Response = None):
+def cors_guard(origin: str = Header(None), response: Response = None, request: Request = None):
     try:
+        # Always set trace ID for CORS tracking
+        trace_id = str(uuid.uuid4())[:8]
+        response.headers["x-trace-id"] = trace_id
+        
         response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
         if origin and _is_allowed_origin(origin):
             response.headers["Access-Control-Allow-Origin"] = origin
         else:
-            print(f"[api] CORS blocked origin={origin}")
+            print(f"[api] CORS guard denied origin={origin} path={request.url.path if request else 'unknown'} trace={trace_id}")
     except Exception as e:
         print(f"[api] CORS guard error: {e}")
 # --- END CORS GUARD ---
@@ -268,6 +286,7 @@ async def shutdown_event():
 class ScrapeRequest(BaseModel):
     query: str
     dryRun: Optional[bool] = False
+    instant: Optional[bool] = False
 
 class Item(BaseModel):
     """Scraped item with AI enrichment support"""
@@ -1498,6 +1517,76 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                 "Access-Control-Allow-Headers": "*"
             }
         )
+    
+    # Check for instant mode (from query param or header)
+    instant_mode = request.instant or http_request.headers.get("X-Instant") == "1"
+    if instant_mode:
+        print(f"[api] INSTANT mode - running scraper immediately (trace: {trace_id})")
+        
+        # Run scraper immediately
+        try:
+            scraper_response = await asyncio.wait_for(
+                call_scraper(query),
+                timeout=SCRAPER_TIMEOUT
+            )
+            
+            # Normalize response
+            normalized_data = normalize_scraper_response(scraper_response)
+            
+            # Convert to response format
+            items_response = []
+            for item in normalized_data.items:
+                item_dict = item.dict()
+                # Ensure url and source_listing_id are present
+                if not item_dict.get("url") and not item_dict.get("source_listing_id"):
+                    # Try to extract from other fields
+                    if item_dict.get("itemId"):
+                        item_dict["source_listing_id"] = item_dict["itemId"]
+                    if item_dict.get("itemWebUrl"):
+                        item_dict["url"] = item_dict["itemWebUrl"]
+                
+                items_response.append(item_dict)
+            
+            # Filter items that have required fields
+            valid_items = [item for item in items_response if item.get("title") and (item.get("url") or item.get("source_listing_id"))]
+            
+            print(f"[api] Instant results: {len(valid_items)}/{len(items_response)} items valid (trace: {trace_id})")
+            
+            # Return instant results
+            response_data = {
+                "ok": True,
+                "items": valid_items,
+                "ingestSummary": {
+                    "total": len(items_response),
+                    "valid": len(valid_items),
+                    "mode": "instant"
+                },
+                "ingestMode": "instant-results",
+                "trace": trace_id
+            }
+            
+            return JSONResponse(
+                content=response_data,
+                headers={
+                    "X-Trace-Id": trace_id,
+                    "x-trace-id": trace_id
+                }
+            )
+            
+        except Exception as e:
+            print(f"[api] Instant mode error: {e} (trace: {trace_id})")
+            return JSONResponse(
+                content={
+                    "ok": False,
+                    "error": f"Instant mode failed: {str(e)}",
+                    "trace": trace_id
+                },
+                status_code=500,
+                headers={
+                    "X-Trace-Id": trace_id,
+                    "x-trace-id": trace_id
+                }
+            )
     
     # Global timeout for entire request (25 seconds max)
     async with asyncio.timeout(GLOBAL_TIMEOUT):
