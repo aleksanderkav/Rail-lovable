@@ -1523,69 +1523,172 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
     if instant_mode:
         print(f"[api] INSTANT mode - running scraper immediately (trace: {trace_id})")
         
-        # Run scraper immediately
         try:
-            scraper_response = await asyncio.wait_for(
-                call_scraper(query),
-                timeout=SCRAPER_TIMEOUT
-            )
+            import traceback
+            t0 = time.time()
             
-            # Normalize response
-            normalized_data = normalize_scraper_response(scraper_response)
+            # Run eBay scraper for both active and sold listings
+            print(f"[api] Scraping eBay active listings (trace: {trace_id})")
+            raw_items = []
             
-            # Convert to response format
-            items_response = []
-            for item in normalized_data.items:
-                item_dict = item.dict()
-                # Ensure url and source_listing_id are present
-                if not item_dict.get("url") and not item_dict.get("source_listing_id"):
-                    # Try to extract from other fields
-                    if item_dict.get("itemId"):
-                        item_dict["source_listing_id"] = item_dict["itemId"]
-                    if item_dict.get("itemWebUrl"):
-                        item_dict["url"] = item_dict["itemWebUrl"]
+            try:
+                active_items = await scrape_ebay(query, mode="active")
+                raw_items.extend(active_items)
+                print(f"[api] Active listings: {len(active_items)} items (trace: {trace_id})")
+            except Exception as e:
+                print(f"[api] Active listings failed: {e} (trace: {trace_id})")
+                active_items = []
+            
+            try:
+                sold_items = await scrape_ebay(query, mode="sold")
+                raw_items.extend(sold_items)
+                print(f"[api] Sold listings: {len(sold_items)} items (trace: {trace_id})")
+            except Exception as e:
+                print(f"[api] Sold listings failed: {e} (trace: {trace_id})")
+                sold_items = []
+            
+            # De-duplicate by source_listing_id or url
+            dedup = {}
+            for item in raw_items:
+                key = item.get("source_listing_id") or item.get("url") or item.get("title")
+                if key and key not in dedup:
+                    dedup[key] = item
+            
+            unique_items = list(dedup.values())
+            print(f"[api] De-duplicated: {len(unique_items)} unique items from {len(raw_items)} total (trace: {trace_id})")
+            
+            # Normalize items to ensure required fields
+            normalized_items = []
+            for item in unique_items:
+                # Extract URL and source_listing_id
+                url = item.get("url") or item.get("itemWebUrl") or item.get("href")
+                source_listing_id = item.get("source_listing_id") or item.get("itemId") or item.get("id")
                 
-                items_response.append(item_dict)
+                # If no source_listing_id but URL exists, try to extract from URL
+                if not source_listing_id and url:
+                    import re
+                    url_match = re.search(r"/(itm|p)/(\d{6,})", url)
+                    if url_match:
+                        source_listing_id = url_match.group(2)
+                
+                # Ensure required fields
+                normalized_item = {
+                    "title": item.get("title") or item.get("raw_title") or "Unknown Title",
+                    "price": item.get("price"),
+                    "currency": item.get("currency") or "USD",
+                    "source": "ebay",
+                    "url": url,
+                    "source_listing_id": source_listing_id,
+                    "sold": item.get("sold", False),
+                    "ended_at": item.get("ended_at"),
+                    "image_url": item.get("image_url") or item.get("image"),
+                    "bids": item.get("bids"),
+                    "total_price": item.get("total_price"),
+                    "raw_query": query
+                }
+                
+                # Only include items with title and either url or source_listing_id
+                if normalized_item["title"] and (normalized_item["url"] or normalized_item["source_listing_id"]):
+                    normalized_items.append(normalized_item)
             
-            # Filter items that have required fields
-            valid_items = [item for item in items_response if item.get("title") and (item.get("url") or item.get("source_listing_id"))]
+            print(f"[api] Normalized: {len(normalized_items)} valid items (trace: {trace_id})")
             
-            print(f"[api] Instant results: {len(valid_items)}/{len(items_response)} items valid (trace: {trace_id})")
+            # Handle ingestion if not dryRun
+            ingest_summary = None
+            if not request.dryRun and normalized_items:
+                try:
+                    print(f"[api] Running ingestion for {len(normalized_items)} items (trace: {trace_id})")
+                    # Use existing ingestion logic
+                    ef_payload = {
+                        "query": query,
+                        "items": normalized_items
+                    }
+                    
+                    if get_ef_url() and get_service_role_key():
+                        ef_status, ef_body = await asyncio.wait_for(
+                            post_to_edge_function(ef_payload),
+                            timeout=EF_TIMEOUT
+                        )
+                        
+                        # Parse ingestion results
+                        try:
+                            ef_response = json.loads(ef_body) if ef_body else {}
+                            items_results = ef_response.get("items", [])
+                            accepted = len([r for r in items_results if r.get("status") == "success"])
+                            
+                            ingest_summary = {
+                                "accepted": accepted,
+                                "total": len(normalized_items),
+                                "ef_status": ef_status,
+                                "mode": "instant-ingestion"
+                            }
+                            
+                            print(f"[api] Ingestion completed: {accepted}/{len(normalized_items)} accepted (trace: {trace_id})")
+                            
+                        except Exception as e:
+                            print(f"[api] Ingestion result parsing failed: {e} (trace: {trace_id})")
+                            ingest_summary = {
+                                "accepted": 0,
+                                "total": len(normalized_items),
+                                "error": str(e),
+                                "mode": "instant-ingestion-failed"
+                            }
+                    else:
+                        print(f"[api] Edge Function not configured, skipping ingestion (trace: {trace_id})")
+                        ingest_summary = {
+                            "accepted": 0,
+                            "total": len(normalized_items),
+                            "error": "Edge Function not configured",
+                            "mode": "instant-no-ef"
+                        }
+                        
+                except Exception as e:
+                    print(f"[api] Ingestion failed: {e} (trace: {trace_id})")
+                    ingest_summary = {
+                        "accepted": 0,
+                        "total": len(normalized_items),
+                        "error": str(e),
+                        "mode": "instant-ingestion-error"
+                    }
             
-            # Return instant results
+            # Return successful response
+            total_time = time.time() - t0
             response_data = {
                 "ok": True,
-                "items": valid_items,
-                "ingestSummary": {
-                    "total": len(items_response),
-                    "valid": len(valid_items),
-                    "mode": "instant"
-                },
+                "items": normalized_items,
+                "ingestSummary": ingest_summary,
                 "ingestMode": "instant-results",
-                "trace": trace_id
+                "trace": trace_id,
+                "scrapeTime": f"{total_time:.2f}s"
             }
+            
+            print(f"[api] Instant mode completed in {total_time:.2f}s: {len(normalized_items)} items (trace: {trace_id})")
             
             return JSONResponse(
                 content=response_data,
                 headers={
-                    "X-Trace-Id": trace_id,
                     "x-trace-id": trace_id
                 }
             )
             
         except Exception as e:
-            print(f"[api] Instant mode error: {e} (trace: {trace_id})")
+            # Log full traceback for debugging
+            import traceback
+            print(f"[api] Instant mode critical error (trace: {trace_id}):")
+            traceback.print_exc()
+            
+            # Return error response with 200 status (not 500)
             return JSONResponse(
                 content={
                     "ok": False,
-                    "error": f"Instant mode failed: {str(e)}",
+                    "detail": "Instant scrape failed",
+                    "error": str(e),
                     "trace": trace_id
                 },
-                status_code=500,
                 headers={
-                    "X-Trace-Id": trace_id,
                     "x-trace-id": trace_id
-                }
+                },
+                status_code=200  # Always 200 to prevent UI crashes
             )
     
     # Global timeout for entire request (25 seconds max)
