@@ -38,7 +38,7 @@ python cron_scraper.py
 3. The service will automatically start the FastAPI server on the configured port.
 4. Create a Cron Job for scheduled scraping:
    - Command: `python cron_scraper.py`
-   - Schedule: `*/30 * * * *` (every 30 minutes) or `0 * * * *` (hourly)
+   - Schedule: `*/5 * * * *` (every 5 minutes) or `0 * * * *` (hourly)
 5. Test the API endpoints and cron job manually.
 
 ## API Endpoints
