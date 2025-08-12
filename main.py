@@ -2751,18 +2751,19 @@ def parse_ebay_listings(html: str, query: str, mode: str) -> List[Dict[str, Any]
 def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
     """Parse individual eBay listing card with bulletproof URL/ID extraction"""
     try:
-        # Extract URL with multiple fallback strategies
+        # Extract URL with comprehensive fallback strategies
         url = None
-        url_selectors = [
+        
+        # Strategy 1: Primary selectors for eBay listing links
+        primary_selectors = [
             "a.s-item__link@href",
             "a[href*='/itm/']@href", 
             "a[href*='/p/']@href",
-            "a@href",
-            "*[data-viewitemurl]@data-viewitemurl",
-            "*[data-href]@data-href"
+            "a.s-item__image-link@href",
+            "a[data-testid='listing-link']@href"
         ]
         
-        for selector in url_selectors:
+        for selector in primary_selectors:
             try:
                 if '@' in selector:
                     attr_selector, attr = selector.split('@')
@@ -2775,6 +2776,7 @@ def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
                             url = elements[0].get(attr)
                         
                         if url and ('/itm/' in url or '/p/' in url):
+                            print(f"[debug] Found URL with {selector}: {url}")
                             break
                 else:
                     elements = card.css(selector)
@@ -2786,21 +2788,68 @@ def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
                             url = elements[0].get('href')
                         
                         if url and ('/itm/' in url or '/p/' in url):
+                            print(f"[debug] Found URL with {selector}: {url}")
                             break
-            except Exception:
+            except Exception as e:
+                print(f"[debug] Selector {selector} failed: {e}")
                 continue
         
-        # Fallback: if href missing on <a/>, try data attributes
+        # Strategy 2: Fallback to any anchor with eBay-like URL
+        if not url:
+            try:
+                all_links = card.css("a")
+                for link in all_links:
+                    try:
+                        if hasattr(link, 'attributes'):
+                            href = link.attributes.get('href')
+                        else:
+                            href = link.get('href')
+                        
+                        if href and ('/itm/' in href or '/p/' in href):
+                            url = href
+                            print(f"[debug] Found URL in fallback anchor: {url}")
+                            break
+                    except Exception:
+                        continue
+            except Exception as e:
+                print(f"[debug] Fallback anchor search failed: {e}")
+        
+        # Strategy 3: Data attributes as last resort
+        if not url:
+            data_attrs = ["data-viewitemurl", "data-href", "data-url", "data-link"]
+            for attr in data_attrs:
+                try:
+                    if hasattr(card, 'attributes'):
+                        data_url = card.attributes.get(attr)
+                    else:
+                        data_url = card.get(attr)
+                    
+                    if data_url and ('/itm/' in data_url or '/p/' in data_url):
+                        url = data_url
+                        print(f"[debug] Found URL in data attribute {attr}: {url}")
+                        break
+                except Exception:
+                    continue
+        
+        # Strategy 4: Direct href attribute on the card element
         if not url:
             try:
                 if hasattr(card, 'attributes'):
                     href_attr = card.attributes.get("href")
                 else:
                     href_attr = card.get("href")
-                if href_attr:
+                if href_attr and ('/itm/' in href_attr or '/p/' in href_attr):
                     url = href_attr
-            except Exception:
-                pass
+                    print(f"[debug] Found URL in direct href: {url}")
+            except Exception as e:
+                print(f"[debug] Direct href check failed: {e}")
+        
+        # Ensure URL is absolute
+        if url and not url.startswith('http'):
+            if url.startswith('/'):
+                url = f"https://www.ebay.com{url}"
+            else:
+                url = f"https://www.ebay.com/{url}"
         
         # Canonicalize URL and extract ID
         if url:
@@ -2811,18 +2860,53 @@ def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
         
         # If still no ID, try data attributes as last resort
         if not source_listing_id and hasattr(card, 'attributes'):
-            for key in ("data-view", "data-id", "data-listingid"):
+            id_attrs = ["data-view", "data-id", "data-listingid", "data-itemid", "itemid", "ebay-id"]
+            for key in id_attrs:
                 try:
                     maybe = card.attributes.get(key)
                     if maybe and re.fullmatch(r"\d{6,}", str(maybe)):
                         source_listing_id = str(maybe)
+                        print(f"[debug] Found ID in data attribute {key}: {source_listing_id}")
                         break
                 except Exception:
                     continue
         
+        # Final fallback: search for any numeric ID in the card's HTML
+        if not source_listing_id:
+            try:
+                # Get the card's HTML content and search for eBay-like IDs
+                if hasattr(card, 'text'):
+                    card_html = card.text()
+                else:
+                    card_html = card.get_text()
+                
+                # Look for patterns like /itm/123456789 or similar
+                id_patterns = [
+                    r"/itm/(\d{6,})",
+                    r"/p/(\d{6,})",
+                    r"[?&]itm=(\d{6,})",
+                    r"[?&]itemId=(\d{6,})",
+                    r"itemId=(\d{6,})",
+                    r"(\d{6,})"  # Any 6+ digit number as last resort
+                ]
+                
+                for pattern in id_patterns:
+                    match = re.search(pattern, card_html)
+                    if match:
+                        source_listing_id = match.group(1)
+                        print(f"[debug] Found ID with pattern {pattern}: {source_listing_id}")
+                        break
+            except Exception as e:
+                print(f"[debug] HTML pattern search failed: {e}")
+        
         # CRITICAL: Require both URL and ID for valid items
         if not url or not source_listing_id:
+            print(f"[debug] REJECTED: Missing URL ({bool(url)}) or ID ({bool(source_listing_id)})")
+            print(f"[debug] URL: {url}")
+            print(f"[debug] ID: {source_listing_id}")
             return None
+        
+        print(f"[debug] ACCEPTED: URL={url}, ID={source_listing_id}")
         
         # Extract title with fallbacks
         title = None
