@@ -172,8 +172,6 @@ http_client = httpx.AsyncClient(
 
 app = FastAPI(title="Rail-lovable Scraper", version="1.0.0")
 
-# --- END CORS GUARD ---
-
 # Global CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -193,6 +191,34 @@ def get_scraper_base():
 
 def get_ef_url():
     return os.getenv("SUPABASE_FUNCTION_URL", "").strip()
+
+# --- BEGIN CORS GUARD ---
+ALLOWED_ORIGINS = {
+    "https://card-pulse-watch.lovable.app",
+    "https://id-preview--ed2352f3-a196-4248-bcf1-3cf010ca8901.lovable.app",
+    "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",
+    "http://localhost:3000",
+    "http://localhost:5173",
+}
+
+def _is_allowed_origin(origin: str | None) -> bool:
+    if not origin:
+        return False
+    if origin in ALLOWED_ORIGINS:
+        return True
+    return origin.endswith(".lovable.app") or origin.endswith(".lovableproject.com")
+
+def cors_guard(origin: str = Header(None), response: Response = None):
+    try:
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
+        if origin and _is_allowed_origin(origin):
+            response.headers["Access-Control-Allow-Origin"] = origin
+        else:
+            print(f"[api] CORS blocked origin={origin}")
+    except Exception as e:
+        print(f"[api] CORS guard error: {e}")
+# --- END CORS GUARD ---
 
 # Add a very loud startup print so we see logs even if something later fails
 def startup_log():
