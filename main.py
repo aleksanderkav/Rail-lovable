@@ -344,6 +344,10 @@ def get_scraper_base():
 def get_ef_url():
     return os.getenv("SUPABASE_FUNCTION_URL", "").strip()
 
+def is_mock_allowed():
+    """Check if mock data is allowed (developer flag only)"""
+    return os.getenv("ALLOW_MOCK_INSTANT", "").lower() == "true"
+
 # --- BEGIN CORS GUARD ---
 
 def _is_allowed_origin(origin: str | None) -> bool:
@@ -839,7 +843,12 @@ async def call_scraper(query: str) -> Dict[str, Any]:
             
         except Exception as e:
             print(f"[api] eBay scraper failed: {e} - falling back to generated data")
-            return generate_fallback_scraper_data(query)
+            if is_mock_allowed():
+                print(f"[api] Mock fallback allowed - returning generated data")
+                return generate_fallback_scraper_data(query)
+            else:
+                print(f"[api] Mock fallback disabled - raising error")
+                raise Exception(f"eBay scraper failed and mock fallback is disabled: {e}")
     
     # Original external scraper logic
     max_retries = 2
@@ -868,7 +877,12 @@ async def call_scraper(query: str) -> Dict[str, Any]:
                 try:
                     return await call_scraper(query)  # Recursive call to eBay scraper
                 except Exception:
-                    return generate_fallback_scraper_data(query)
+                    if is_mock_allowed():
+                        print(f"[api] Mock fallback allowed - returning generated data")
+                        return generate_fallback_scraper_data(query)
+                    else:
+                        print(f"[api] Mock fallback disabled - raising error")
+                        raise Exception("eBay scraper failed and mock fallback is disabled")
             else:
                 print(f"[api] Scraper timeout, attempt {attempt + 1}/{max_retries + 1}")
                 
@@ -878,16 +892,26 @@ async def call_scraper(query: str) -> Dict[str, Any]:
                 try:
                     return await call_scraper(query)  # Recursive call to eBay scraper
                 except Exception:
-                    return generate_fallback_scraper_data(query)
+                    if is_mock_allowed():
+                        print(f"[api] Mock fallback allowed - returning generated data")
+                        return generate_fallback_scraper_data(query)
+                    else:
+                        print(f"[api] Mock fallback disabled - raising error")
+                        raise Exception("eBay scraper failed and mock fallback is disabled")
             else:
                 print(f"[api] Scraper error, attempt {attempt + 1}/{max_retries + 1}: {e}")
     
     # Final fallback
     print(f"[api] All scraper attempts failed - using fallback data")
-    return generate_fallback_scraper_data(query)
+    if is_mock_allowed():
+        print(f"[api] Mock fallback allowed - returning generated data")
+        return generate_fallback_scraper_data(query)
+    else:
+        print(f"[api] Mock fallback disabled - raising error")
+        raise Exception("All scraper attempts failed and mock fallback is disabled")
 
 def generate_fallback_scraper_data(query: str) -> Dict[str, Any]:
-    """Generate realistic fallback data when scraper is not available"""
+    """Generate realistic fallback data when scraper is not available (DEVELOPMENT ONLY)"""
     
     # Generate realistic eBay-like items based on the query
     items = []
@@ -1609,7 +1633,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
     # Check for instant mode (from query param or header)
     instant_mode = request.instant or http_request.headers.get("X-Instant") == "1"
     if instant_mode:
-        print(f"[instant] REAL scraper start q='{query}' trace={trace_id}")
+        print(f"[instant] start real_ebay_scraper q='{query}' trace={trace_id}")
         
         try:
             t0 = time.time()
@@ -1683,6 +1707,24 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
             
             print(f"[parse] found_cards={len(active_items) + len(sold_items)} accepted={len(merged)} skipped={skipped} trace={trace_id}")
             
+            # HARD VALIDATION GATE: Ensure no items without URL/ID are returned
+            if not merged:
+                print(f"[instant] VALIDATION FAILED: No valid items after filtering - returning error trace={trace_id}")
+                error_payload = {
+                    "ok": False,
+                    "detail": "all_items_missing_url_or_id",
+                    "counts": {
+                        "total": len(active_items) + len(sold_items),
+                        "withUrl": len([i for i in (active_items + sold_items) if i.get("url")]),
+                        "withId": len([i for i in (active_items + sold_items) if i.get("source_listing_id")])
+                    },
+                    "trace": trace_id,
+                    "where": "instant"
+                }
+                resp, trace = json_with_trace(error_payload, 502, trace_id)
+                print(f"[instant] ERROR returned: {error_payload} trace={trace}")
+                return resp
+            
             # Prepare ingest summary but do NOT fail instant UX if ingest fails
             ingest_summary = {"accepted": 0, "total": len(merged)}
             try:
@@ -1702,7 +1744,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
             }
             
             resp, trace = json_with_trace(payload, 200, trace_id)
-            print(f"[instant] done accepted={len(merged)} skipped={skipped} dur_ms={int((time.time()-t0)*1000)} trace={trace}")
+            print(f"[instant] done accepted={len(merged)} trace={trace}")
             return resp
             
         except Exception as e:
