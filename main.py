@@ -55,44 +55,97 @@ def extract_url_and_id(node_get_attr, node_text) -> Dict[str, Optional[str]]:
     
     return {"url": href, "source_listing_id": src_id}
 
-# Price parsing utility
+# Enhanced eBay URL and ID extraction utilities
+import re
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+
+EBAY_ID_REGEXES = [
+    re.compile(r"/itm/(\d{6,})"),
+    re.compile(r"[?&]itm=(\d{6,})"),
+    re.compile(r"/p/(\d{6,})"),
+    re.compile(r"/\d{6,}(?:\?|$)"),
+]
+
+def extract_ebay_id(url: str) -> str | None:
+    """Extract eBay item ID from various URL formats"""
+    if not url:
+        return None
+    try:
+        for rx in EBAY_ID_REGEXES:
+            m = rx.search(url)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return None
+
+def canonicalize_ebay_url(url: str) -> str:
+    """
+    Normalize eBay listing URLs:
+      - keep scheme + netloc + path
+      - drop tracking params
+      - keep `itm` param if present
+    """
+    if not url:
+        return url
+    try:
+        u = urlparse(url)
+        # Keep only essential query params (itm if present)
+        q = dict(parse_qsl(u.query, keep_blank_values=True))
+        keep = {}
+        if "itm" in q:
+            keep["itm"] = q["itm"]
+        # Rebuild
+        return urlunparse((u.scheme, u.netloc, u.path, "", urlencode(keep), ""))
+    except Exception:
+        return url
+
+# Enhanced price parsing utility
 def parse_price(s: str) -> tuple[Optional[float], Optional[str]]:
-    """Parse price and detect currency from string"""
+    """Parse price and detect currency from string with improved parsing"""
     if not s:
         return None, None
     
-    # Detect currency by symbol
-    currency_map = {
-        "$": "USD",
-        "£": "GBP", 
-        "€": "EUR",
-        "kr": "NOK",  # Norwegian/Swedish
-        "¥": "JPY",
+    # Enhanced currency detection
+    PRICE_CURRENCY_MAP = {
+        "$": "USD", "US$": "USD", "USD": "USD",
+        "£": "GBP", "GBP": "GBP",
+        "€": "EUR", "EUR": "EUR",
+        "kr": "NOK", "NOK": "NOK",
+        "¥": "JPY", "JPY": "JPY",
         "₹": "INR",
         "₽": "RUB"
     }
     
+    s = s.strip()
+    
+    # Try symbol first
     currency = None
-    for symbol, curr in currency_map.items():
-        if symbol in s:
-            currency = curr
+    for sym, iso in PRICE_CURRENCY_MAP.items():
+        if s.startswith(sym) or s.upper().startswith(sym):
+            currency = iso
             break
     
-    # Default to USD if $ seen, otherwise None
-    if not currency and "$" in s:
-        currency = "USD"
+    # Normalize decimal/thousands (very simple heuristic)
+    # Remove spaces
+    ns = re.sub(r"\s+", "", s)
+    # Remove currency tokens and non-numeric except separators
+    ns = re.sub(r"[^\d,.\-]", "", ns)
+    # If both comma and dot present, assume comma = thousands, dot = decimal
+    if "," in ns and "." in ns:
+        ns = ns.replace(",", "")
+    else:
+        # If only comma and looks like decimal, convert to dot
+        if "," in ns and re.search(r",\d{1,2}$", ns):
+            ns = ns.replace(",", ".")
+        else:
+            ns = ns.replace(",", "")
     
-    # Extract first number (accept , and .)
-    import re
-    number_match = re.search(r'[\d,]+\.?\d*', s.replace(',', ''))
-    if number_match:
-        try:
-            value = float(number_match.group())
-            return value, currency
-        except ValueError:
-            pass
-    
-    return None, currency
+    try:
+        value = float(ns)
+        return value, currency
+    except Exception:
+        return None, currency
 
 # Safe normalizer import with fallback
 # try:
@@ -2532,15 +2585,7 @@ EBAY_USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 ]
 
-CURRENCY_SYMBOLS = {
-    "$": "USD",
-    "£": "GBP", 
-    "€": "EUR",
-    "kr": "NOK",  # Norwegian/Swedish
-    "¥": "JPY",
-    "₹": "INR",
-    "₽": "RUB"
-}
+
 
 async def scrape_ebay(query: str, mode: str = "active") -> List[Dict[str, Any]]:
     """Scrape eBay listings with robust parsing and anti-bot measures"""
@@ -2704,13 +2749,13 @@ def parse_ebay_listings(html: str, query: str, mode: str) -> List[Dict[str, Any]
     return items
 
 def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
-    """Parse individual eBay listing card with fallback selectors"""
+    """Parse individual eBay listing card with bulletproof URL/ID extraction"""
     try:
-        # Extract URL with fallbacks
+        # Extract URL with multiple fallback strategies
         url = None
         url_selectors = [
             "a.s-item__link@href",
-            "a[href*='/itm/']@href",
+            "a[href*='/itm/']@href", 
             "a[href*='/p/']@href",
             "a@href",
             "*[data-viewitemurl]@data-viewitemurl",
@@ -2745,64 +2790,38 @@ def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
             except Exception:
                 continue
         
-        # Extract source_listing_id with multiple strategies
-        source_listing_id = None
-        
-        # Strategy 1: Extract from URL if we found one
-        if url:
-            # Try /itm/ pattern first (most common)
-            itm_match = re.search(r"/itm/(\d{6,})", url)
-            if itm_match:
-                source_listing_id = itm_match.group(1)
-                print(f"[api] Extracted ID from eBay URL /itm/: {source_listing_id}")
-            else:
-                # Try /p/ pattern
-                p_match = re.search(r"/p/(\d{6,})", url)
-                if p_match:
-                    source_listing_id = p_match.group(1)
-                    print(f"[api] Extracted ID from eBay URL /p/: {source_listing_id}")
-                else:
-                    # Try query parameters
-                    query_match = re.search(r"[?&](?:itm|itemId)=(\d{6,})", url)
-                    if query_match:
-                        source_listing_id = query_match.group(1)
-                        print(f"[api] Extracted ID from URL query param: {source_listing_id}")
-        
-        # Strategy 2: Check data attributes that often carry the ID
-        if not source_listing_id:
-            id_attributes = ["data-id", "itemid", "ebay-id", "listingid", "data-itemid"]
-            for attr in id_attributes:
-                try:
-                    elements = card.css(f"[{attr}]")
-                    if elements:
-                        # Handle both selectolax and BeautifulSoup objects
-                        if hasattr(elements[0], 'attributes'):
-                            item_id = elements[0].attributes.get(attr)
-                        else:
-                            item_id = elements[0].get(attr)
-                        
-                        if item_id and re.match(r'\d{6,}', str(item_id)):
-                            source_listing_id = str(item_id)
-                            print(f"[api] Extracted ID from {attr} attribute: {source_listing_id}")
-                            break
-                except Exception:
-                    continue
-        
-        # Strategy 3: Check for ID in other common fields
-        if not source_listing_id:
-            id_fields = ["source_listing_id", "itemId", "id", "listing_id", "ebay_id"]
-            for id_field in id_fields:
-                try:
-                    # This would be for items that already have the ID field populated
-                    if hasattr(card, 'get') and card.get(id_field):
-                        source_listing_id = str(card.get(id_field))
-                        if re.match(r'\d{6,}', source_listing_id):
-                            print(f"[api] Found ID in {id_field} field: {source_listing_id}")
-                            break
-                except Exception:
-                    continue
-        
+        # Fallback: if href missing on <a/>, try data attributes
         if not url:
+            try:
+                if hasattr(card, 'attributes'):
+                    href_attr = card.attributes.get("href")
+                else:
+                    href_attr = card.get("href")
+                if href_attr:
+                    url = href_attr
+            except Exception:
+                pass
+        
+        # Canonicalize URL and extract ID
+        if url:
+            url = canonicalize_ebay_url(url)
+            source_listing_id = extract_ebay_id(url)
+        else:
+            source_listing_id = None
+        
+        # If still no ID, try data attributes as last resort
+        if not source_listing_id and hasattr(card, 'attributes'):
+            for key in ("data-view", "data-id", "data-listingid"):
+                try:
+                    maybe = card.attributes.get(key)
+                    if maybe and re.fullmatch(r"\d{6,}", str(maybe)):
+                        source_listing_id = str(maybe)
+                        break
+                except Exception:
+                    continue
+        
+        # CRITICAL: Require both URL and ID for valid items
+        if not url or not source_listing_id:
             return None
         
         # Extract title with fallbacks
@@ -2859,24 +2878,8 @@ def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
             except Exception:
                 continue
         
-        # Parse price and currency
-        price = None
-        currency = "USD"
-        
-        if price_text:
-            # Detect currency from symbol
-            for symbol, curr in CURRENCY_SYMBOLS.items():
-                if symbol in price_text:
-                    currency = curr
-                    break
-            
-            # Extract numeric price
-            price_match = re.search(r'[\d,]+\.?\d*', price_text.replace(',', ''))
-            if price_match:
-                try:
-                    price = float(price_match.group())
-                except ValueError:
-                    pass
+        # Parse price and currency using enhanced parser
+        price, currency = parse_price(price_text) if price_text else (None, "USD")
         
         # Extract image URL
         image_url = None
@@ -2991,7 +2994,7 @@ def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
                 except ValueError:
                     pass
         
-        # Build item
+        # Build item - now guaranteed to have url + source_listing_id
         item = {
             "title": title,
             "raw_title": title,
@@ -3123,6 +3126,8 @@ async def options_catch_all():
 # Include the router with all the main endpoints
 app.include_router(router)
 
+# Quick scraper test (uncomment to test locally)
+# if __name__ == "__main__":
 if __name__ == "__main__":
     # Get port from environment (Railway sets PORT)
     port = int(os.getenv("PORT", 8000))
