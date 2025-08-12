@@ -1631,14 +1631,11 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                 sold_items = []
             
             # merge + dedupe by source_listing_id or url lowercased
-            def key(it): 
-                return (it.get("source_listing_id") or "").strip() or (it.get("url") or "").strip().lower()
-            
             merged = []
             seen = set()
             for lst in (active_items, sold_items):
                 for it in lst or []:
-                    k = key(it)
+                    k = (it.get("source_listing_id") or "").strip() or (it.get("url") or "").strip().lower()
                     if not k: 
                         merged.append(it)  # keep for diagnostics
                     elif k not in seen:
