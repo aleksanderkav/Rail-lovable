@@ -98,6 +98,28 @@ def parse_price(s: str) -> tuple[Optional[float], Optional[str]]:
 # try:
 #     from normalizer import normalizer, NormalizedItem, ParsedHints
 # except Exception as e:
+
+# --- CORS Configuration ---
+def get_allowed_origins():
+    raw_origins = os.getenv("ALLOW_ORIGINS", "").strip()
+    if raw_origins:
+        # Parse comma-separated origins from environment
+        origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
+        print(f"✅ Loaded ALLOW_ORIGINS: {origins}")
+        return origins
+    else:
+        # Default origins if env not set
+        default_origins = [
+            "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",
+            "https://id-preview--ed2352f3-a196-4248-bcf1-3cf010ca8901.lovable.app",
+            "https://card-pulse-watch.lovable.app",
+            "http://localhost:3000",
+            "http://localhost:5173",
+        ]
+        print(f"✅ Loaded ALLOW_ORIGINS (defaults): {default_origins}")
+        return default_origins
+
+ALLOWED_ORIGINS = get_allowed_origins()
 #     normalizer = None
 #     ParsedHints = None
 #     NormalizedItem = None
@@ -270,27 +292,6 @@ def get_ef_url():
     return os.getenv("SUPABASE_FUNCTION_URL", "").strip()
 
 # --- BEGIN CORS GUARD ---
-# Read allowed origins from environment variable
-def get_allowed_origins():
-    raw_origins = os.getenv("ALLOW_ORIGINS", "").strip()
-    if raw_origins:
-        # Parse comma-separated origins from environment
-        origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
-        print(f"✅ Loaded ALLOW_ORIGINS: {origins}")
-        return origins
-    else:
-        # Default origins if env not set
-        default_origins = [
-            "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",
-            "https://id-preview--ed2352f3-a196-4248-bcf1-3cf010ca8901.lovable.app",
-            "https://card-pulse-watch.lovable.app",
-            "http://localhost:3000",
-            "http://localhost:5173",
-        ]
-        print(f"✅ Loaded ALLOW_ORIGINS (defaults): {default_origins}")
-        return default_origins
-
-ALLOWED_ORIGINS = get_allowed_origins()
 
 def _is_allowed_origin(origin: str | None) -> bool:
     if not origin:
