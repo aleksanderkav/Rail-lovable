@@ -1632,6 +1632,8 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
     
     # Check for instant mode (from query param or header)
     instant_mode = request.instant or http_request.headers.get("X-Instant") == "1"
+    print(f"[DEBUG] Instant mode detection: request.instant={request.instant}, header.X-Instant={http_request.headers.get('X-Instant')}, instant_mode={instant_mode} trace={trace_id}")
+    
     if instant_mode:
         print(f"[instant] start real_ebay_scraper q='{query}' trace={trace_id}")
         
@@ -1758,6 +1760,9 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
     
     # Log summary for every /scrape-now response
     print(f"[scrape-now] mode={'instant' if instant_mode else 'queued'} items=0 accepted=0 trace={trace_id}")
+    
+    if not instant_mode:
+        print(f"[DEBUG] NOT instant mode - going through normal scraping path trace={trace_id}")
     
     # Global timeout for entire request (25 seconds max)
     async with asyncio.timeout(GLOBAL_TIMEOUT):
