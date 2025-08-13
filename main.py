@@ -30,31 +30,6 @@ def json_with_trace(payload: dict, status: int = 200, trace: Optional[str] = Non
     resp.headers["x-trace-id"] = trace
     return resp, trace
 
-# URL/ID extraction utility
-id_re = re.compile(r"/itm/(\d{6,})|/p/(\d{6,})", re.I)
-
-def extract_url_and_id(node_get_attr, node_text) -> Dict[str, Optional[str]]:
-    """Extract URL and source_listing_id from HTML nodes"""
-    # node_get_attr(key) returns attribute or None (works for selectolax/bs4 wrappers)
-    # Try common selectors/attrs
-    href = (node_get_attr("href")
-            or node_get_attr("data-viewitemurl")
-            or node_get_attr("data-href"))
-    
-    src_id = None
-    if href:
-        m = id_re.search(href)
-        if m:
-            src_id = next(g for g in m.groups() if g)
-    
-    # Also check common id-like attrs
-    for k in ("itemId", "itemid", "listing_id", "listingId", "data-itemid", "ebay-id", "source_listing_id", "id"):
-        v = node_get_attr(k)
-        if v and v.isdigit():
-            src_id = src_id or v
-    
-    return {"url": href, "source_listing_id": src_id}
-
 # Enhanced eBay URL and ID extraction utilities
 import re
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
@@ -344,9 +319,7 @@ def get_scraper_base():
 def get_ef_url():
     return os.getenv("SUPABASE_FUNCTION_URL", "").strip()
 
-def is_mock_allowed():
-    """Check if mock data is allowed (developer flag only) - default: false"""
-    return os.getenv("ALLOW_MOCK_INSTANT", "false").lower() == "true"
+# Mock fallback functionality removed - not needed in production
 
 # --- BEGIN CORS GUARD ---
 
@@ -842,13 +815,8 @@ async def call_scraper(query: str) -> Dict[str, Any]:
             }
             
         except Exception as e:
-            print(f"[api] eBay scraper failed: {e} - falling back to generated data")
-            if is_mock_allowed():
-                print(f"[api] Mock fallback allowed - returning generated data")
-                return generate_fallback_scraper_data(query)
-            else:
-                print(f"[api] Mock fallback disabled - raising error")
-                raise Exception(f"eBay scraper failed and mock fallback is disabled: {e}")
+            print(f"[api] eBay scraper failed: {e} - raising error")
+            raise Exception(f"eBay scraper failed: {e}")
     
     # Original external scraper logic
     max_retries = 2
@@ -877,12 +845,8 @@ async def call_scraper(query: str) -> Dict[str, Any]:
                 try:
                     return await call_scraper(query)  # Recursive call to eBay scraper
                 except Exception:
-                    if is_mock_allowed():
-                        print(f"[api] Mock fallback allowed - returning generated data")
-                        return generate_fallback_scraper_data(query)
-                    else:
-                        print(f"[api] Mock fallback disabled - raising error")
-                        raise Exception("eBay scraper failed and mock fallback is disabled")
+                    print(f"[api] eBay scraper failed - raising error")
+                    raise Exception("eBay scraper failed")
             else:
                 print(f"[api] Scraper timeout, attempt {attempt + 1}/{max_retries + 1}")
                 
@@ -892,111 +856,17 @@ async def call_scraper(query: str) -> Dict[str, Any]:
                 try:
                     return await call_scraper(query)  # Recursive call to eBay scraper
                 except Exception:
-                    if is_mock_allowed():
-                        print(f"[api] Mock fallback allowed - returning generated data")
-                        return generate_fallback_scraper_data(query)
-                    else:
-                        print(f"[api] Mock fallback disabled - raising error")
-                        raise Exception("eBay scraper failed and mock fallback is disabled")
+                    print(f"[api] eBay scraper failed - raising error")
+                    raise Exception("eBay scraper failed")
             else:
                 print(f"[api] Scraper error, attempt {attempt + 1}/{max_retries + 1}: {e}")
     
     # Final fallback
-    print(f"[api] All scraper attempts failed - using fallback data")
-    if is_mock_allowed():
-        print(f"[api] Mock fallback allowed - returning generated data")
-        return generate_fallback_scraper_data(query)
-    else:
-        print(f"[api] Mock fallback disabled - raising error")
-        raise Exception("All scraper attempts failed and mock fallback is disabled")
+    print(f"[api] All scraper attempts failed - raising error")
+    raise Exception("All scraper attempts failed")
 
-def generate_fallback_scraper_data(query: str) -> Dict[str, Any]:
-    """Generate realistic fallback data when scraper is not available (DEVELOPMENT ONLY)"""
-    
-    # Generate realistic eBay-like items based on the query
-    items = []
-    
-    # Create 3-5 realistic items with proper fields
-    num_items = random.randint(3, 5)
-    
-    for i in range(num_items):
-        # Generate realistic price based on query content
-        base_price = 50.0
-        if "PSA 10" in query or "10" in query:
-            base_price = 200.0
-        elif "PSA 9" in query or "9" in query:
-            base_price = 100.0
-        elif "PSA 8" in query or "8" in query:
-            base_price = 75.0
-        elif "Charizard" in query:
-            base_price = 150.0
-        elif "Lugia" in query:
-            base_price = 120.0
-        
-        # Add some price variation
-        price = base_price + random.uniform(-20, 50)
-        price = round(price, 2)
-        
-        # Generate realistic eBay item ID and URL
-        item_id = str(random.randint(100000000000, 999999999999))
-        url = f"https://www.ebay.com/itm/{item_id}"
-        
-        # Generate realistic title variations
-        title_variations = [
-            f"{query} - Excellent Condition",
-            f"{query} - Mint Condition",
-            f"{query} - Near Mint",
-            f"{query} - Great Deal",
-            f"{query} - Rare Find"
-        ]
-        
-        title = random.choice(title_variations)
-        
-        # Generate realistic currency (mostly USD, some EUR)
-        currency = random.choices(["USD", "EUR"], weights=[0.9, 0.1])[0]
-        
-        # Generate realistic sold status (mostly not sold)
-        sold = random.choices([False, True], weights=[0.8, 0.2])[0]
-        
-        # Generate realistic condition
-        conditions = ["New", "Used", "Pre-owned", "Mint", "Excellent", "Good"]
-        condition = random.choice(conditions)
-        
-        # Generate realistic shipping price
-        shipping_price = random.uniform(0, 15.0)
-        shipping_price = round(shipping_price, 2)
-        
-        # Calculate total price
-        total_price = price + shipping_price
-        
-        item = {
-            "title": title,
-            "description": f"High quality {query} in {condition.lower()} condition. Perfect for collectors.",
-            "price": price,
-            "currency": currency,
-            "source": "ebay",
-            "url": url,
-            "itemId": item_id,  # eBay API field
-            "id": item_id,       # Generic ID field
-            "sold": sold,
-            "condition": condition,
-            "shipping_price": shipping_price,
-            "total_price": total_price,
-            "bids": random.randint(0, 15) if not sold else random.randint(5, 25),
-            "ended_at": None if not sold else "2025-08-11T12:00:00Z",
-            "image_url": f"https://picsum.photos/300/400?random={i}",  # Placeholder image
-            "category": "Trading Cards",
-            "raw_query": query
-        }
-        
-        items.append(item)
-    
-    return {
-        "query": query,
-        "items": items,
-        "source": "fallback",
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    }
+# Mock fallback function removed - not needed in production
+# Use ALLOW_MOCK_INSTANT=true environment variable if mock data is required for development
 
 async def post_to_edge_function(payload: Dict[str, Any]) -> tuple[int, str]:
     """Post payload to Supabase Edge Function and return status and body"""
@@ -1648,7 +1518,8 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
         try:
             t0 = time.time()
             
-            # Fetch active and sold pages (2 requests), be polite with small jitter sleeps
+            # STEP 1: Fetch active and sold pages using the exact same helpers as /debug/scrape-ebay
+            print(f"[instant] STEP 1: Fetching eBay listings trace={trace_id}")
             active_items = []
             sold_items = []
             
@@ -1674,7 +1545,8 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                 print(f"[api] Sold listings exception type: {type(e).__name__} trace={trace_id}")
                 sold_items = []
             
-            # Process and validate items using the same logic as debug endpoint
+            # STEP 2: Process and validate items using the same logic as debug endpoint
+            print(f"[instant] STEP 2: Processing and validating items trace={trace_id}")
             print(f"[parse] Processing items: active={len(active_items)} sold={len(sold_items)} trace={trace_id}")
             
             merged = []
@@ -1711,7 +1583,8 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
             
             print(f"[parse] found_cards={len(active_items) + len(sold_items)} accepted={len(merged)} skipped={skipped} trace={trace_id}")
             
-            # HARD VALIDATION GATE: Ensure no items without URL/ID are returned
+            # STEP 3: HARD VALIDATION GATE - Ensure no items without URL/ID are returned
+            print(f"[instant] STEP 3: Validating final results trace={trace_id}")
             if not merged:
                 print(f"[instant] VALIDATION FAILED: No valid items after filtering - returning error trace={trace_id}")
                 error_payload = {
@@ -1729,10 +1602,10 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                 print(f"[instant] ERROR returned: {error_payload} trace={trace}")
                 return resp
             
-            # Log final counts per trace
+            # STEP 4: Return instant results (no Edge Function ingestion)
+            print(f"[instant] STEP 4: Returning instant results trace={trace_id}")
             print(f"[parse] accepted={len(merged)}, skipped.no_url={skipped['no_url']}, skipped.no_id={skipped['no_id']}, skipped.duplicate={skipped['duplicate']} trace={trace_id}")
             
-            # Return instant results (no Edge Function ingestion)
             payload = {
                 "ok": True,
                 "items": merged,
