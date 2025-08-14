@@ -3521,11 +3521,14 @@ async def debug_ingest_sample():
 async def debug_admin_token():
     """Debug endpoint to check admin token configuration"""
     expected_token = get_admin_proxy_token()
+    env_var = os.getenv("ADMIN_PROXY_TOKEN")
     return {
         "ok": True,
         "token_length": len(expected_token) if expected_token else 0,
         "token_preview": expected_token[:10] + "..." if expected_token and len(expected_token) > 10 else expected_token,
-        "env_var_set": bool(os.getenv("ADMIN_PROXY_TOKEN"))
+        "env_var_set": bool(env_var),
+        "env_var_preview": env_var[:10] + "..." if env_var and len(env_var) > 10 else env_var,
+        "token_matches_env": expected_token == env_var
     }
 
 @router.get("/admin/cards")
