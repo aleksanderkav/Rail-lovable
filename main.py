@@ -136,15 +136,15 @@ def get_allowed_origins():
         print(f"✅ Loaded ALLOW_ORIGINS: {origins}")
         return origins
     else:
-        # Default origins if env not set
+        # Default origins if env not set - support wildcard subdomains for Lovable
         default_origins = [
-            "https://ed2352f3-a196-4248-bcf1-3cf010ca8901.lovableproject.com",
-            "https://id-preview--ed2352f3-a196-4248-bcf1-3cf010ca8901.lovable.app",
+            "https://*.lovable.app",
+            "https://*.lovableproject.com",
             "https://card-pulse-watch.lovable.app",
             "http://localhost:3000",
             "http://localhost:5173",
         ]
-        print(f"✅ Loaded ALLOW_ORIGINS (defaults): {default_origins}")
+        print(f"✅ Loaded ALLOW_ORIGINS (defaults with wildcards): {default_origins}")
         return default_origins
 
 ALLOWED_ORIGINS = get_allowed_origins()
@@ -314,7 +314,11 @@ router = APIRouter()
 
 # --- Safe, lazy clients (don't create at import time) ---
 def get_scraper_base():
-    return os.getenv("SCRAPER_BASE_URL", "").strip()
+    """Get external scraper base URL - returns empty string if not configured to prevent HTTP 502 errors"""
+    scraper_url = os.getenv("SCRAPER_BASE_URL", "").strip()
+    if not scraper_url:
+        print("[api] SCRAPER_BASE_URL not configured - external scraper disabled")
+    return scraper_url
 
 def get_ef_url():
     return os.getenv("SUPABASE_FUNCTION_URL", "").strip()
@@ -326,10 +330,23 @@ def get_ef_url():
 def _is_allowed_origin(origin: str | None) -> bool:
     if not origin:
         return False
+    
+    # Check exact matches first
     if origin in ALLOWED_ORIGINS:
         return True
-    # Also accept any lovable preview domains
-    return origin.endswith(".lovable.app") or origin.endswith(".lovableproject.com")
+    
+    # Check wildcard patterns for Lovable domains
+    if origin.endswith(".lovable.app") or origin.endswith(".lovableproject.com"):
+        return True
+    
+    # Check if origin matches any wildcard patterns in ALLOWED_ORIGINS
+    for pattern in ALLOWED_ORIGINS:
+        if pattern.startswith("https://*."):
+            domain = pattern[8:]  # Remove "https://*."
+            if origin.endswith(domain):
+                return True
+    
+    return False
 
 def cors_guard(origin: str = Header(None), response: Response = None, request: Request = None):
     try:
@@ -946,10 +963,15 @@ async def post_to_edge_function(payload: Dict[str, Any]) -> tuple[int, str]:
 
 async def check_scraper_reachable() -> bool:
     """Check if scraper is reachable without running a full scrape"""
+    scraper_base = get_scraper_base()
+    if not scraper_base:
+        print("[api] Scraper not configured - skipping reachability check")
+        return True  # Return True to indicate no external dependency
+    
     try:
         # Quick health check to scraper
         response = await asyncio.wait_for(
-            http_client.get(f"{get_scraper_base()}/", timeout=3.0),
+            http_client.get(f"{scraper_base}/", timeout=3.0),
             timeout=3.0
         )
         return response.status_code < 500
@@ -1118,9 +1140,20 @@ async def smoketest():
     trace_id = str(uuid.uuid4())[:8]
     
     try:
+        scraper_base = get_scraper_base()
+        if not scraper_base:
+            return JSONResponse(
+                content={
+                    "ok": True,
+                    "message": "External scraper not configured - skipping test",
+                    "trace": trace_id
+                },
+                headers={"X-Trace-Id": trace_id}
+            )
+        
         # Quick scrape with limit=1 and short timeout
         response = await asyncio.wait_for(
-            http_client.get(f"{get_scraper_base()}/scrape", params={"query": "test", "limit": 1}),
+            http_client.get(f"{scraper_base}/scrape", params={"query": "test", "limit": 1}),
             timeout=6.0
         )
         
@@ -1137,7 +1170,7 @@ async def smoketest():
             return JSONResponse(
                 content={
                     "ok": False,
-                    "error": f"Scraper returned status {response.status_code}",
+                    "detail": f"Scraper returned status {response.status_code}",
                     "trace": trace_id
                 },
                 status_code=502,
@@ -1148,7 +1181,7 @@ async def smoketest():
         return JSONResponse(
             content={
                 "ok": False,
-                "error": "Scraper timeout (6s)",
+                "detail": "Scraper timeout (6s)",
                 "trace": trace_id
             },
             status_code=502,
@@ -1158,10 +1191,10 @@ async def smoketest():
         return JSONResponse(
             content={
                 "ok": False,
-                "error": f"Scraper error: {str(e)}",
+                "detail": f"Scraper error: {str(e)}",
                 "trace": trace_id
             },
-            status_code=502,
+            status_code=500,
             headers={"X-Trace-Id": trace_id}
         )
 
@@ -3277,9 +3310,9 @@ async def ingest(request: IngestRequest, http_request: Request):
             # Normalize title with fallbacks
             title = item.get('title') or item.get('name') or ''
             
-            # Normalize URL with fallbacks
+            # Normalize URL with fallbacks - expanded to include more URL fields
             url = None
-            url_sources = ['url', 'debug_url', 'href', 'link', 'permalink']
+            url_sources = ['url', 'debug_url', 'href', 'link', 'permalink', 'viewItemURL', 'itemWebUrl']
             for url_key in url_sources:
                 if item.get(url_key):
                     url = item.get(url_key)
@@ -3297,28 +3330,14 @@ async def ingest(request: IngestRequest, http_request: Request):
                         print(f"[ingest] item#{i+1} using id={id_key}")
                     break
             
-            # Derive source_listing_id from URL if still empty
+            # Derive source_listing_id from URL if still empty - using enhanced regex patterns
             if not source_listing_id and url:
-                # Try /itm/<digits>
-                match = re.search(r'/itm/(\d{6,})', url)
-                if match:
-                    source_listing_id = match.group(1)
+                # Use the same enhanced regex patterns as defined in the frontend
+                ebay_id = extract_ebay_id(url)
+                if ebay_id:
+                    source_listing_id = ebay_id
                     if i < 3:  # Log first 3 items
-                        print(f"[ingest] item#{i+1} derived id:/itm/ {source_listing_id}")
-                else:
-                    # Try query param itm=<digits>
-                    match = re.search(r'[?&]itm=(\d{6,})', url)
-                    if match:
-                        source_listing_id = match.group(1)
-                        if i < 3:  # Log first 3 items
-                            print(f"[ingest] item#{i+1} derived id:?itm= {source_listing_id}")
-                    else:
-                        # Try /p/<digits>
-                        match = re.search(r'/p/(\d{6,})', url)
-                        if match:
-                            source_listing_id = match.group(1)
-                            if i < 3:  # Log first 3 items
-                                print(f"[ingest] item#{i+1} derived id:/p/ {source_listing_id}")
+                        print(f"[ingest] item#{i+1} derived id from URL: {source_listing_id}")
             
             # Check for required fields
             if not url:
