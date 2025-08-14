@@ -3518,6 +3518,17 @@ async def debug_ingest_sample():
         }
     }
 
+@router.get("/debug/admin-token")
+async def debug_admin_token():
+    """Debug endpoint to check admin token configuration"""
+    expected_token = get_admin_proxy_token()
+    return {
+        "ok": True,
+        "token_length": len(expected_token) if expected_token else 0,
+        "token_preview": expected_token[:10] + "..." if expected_token and len(expected_token) > 10 else expected_token,
+        "env_var_set": bool(os.getenv("ADMIN_PROXY_TOKEN"))
+    }
+
 @router.get("/admin/cards")
 async def admin_cards(request: Request, search: Optional[str] = None, limit: int = 50):
     """Admin endpoint to list cards from database"""
