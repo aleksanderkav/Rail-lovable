@@ -3394,6 +3394,65 @@ async def ingest(request: IngestRequest, http_request: Request):
         # Log completion summary
         print(f"[api] /ingest accepted={len(valid_items)} skipped={skip_counters} (trace: {trace_id})")
         
+        # Enhanced logging when accepted=0 - log reason per skipped category with item samples
+        if len(valid_items) == 0:
+            print(f"[ingest] WARNING: No items accepted! Analyzing skipped items (trace: {trace_id})")
+            
+            # Collect skipped items for detailed logging
+            skipped_items = {"no_url": [], "no_id": [], "dup": []}
+            
+            for i, item in enumerate(request.items):
+                # Re-run validation logic to categorize the item
+                url = None
+                for url_key in ['url', 'debug_url', 'href', 'link', 'permalink']:
+                    if item.get(url_key):
+                        url = item.get(url_key)
+                        break
+                
+                source_listing_id = None
+                for id_key in ['source_listing_id', 'listing_id', 'id', 'itemId', 'ebay_id']:
+                    if item.get(id_key):
+                        source_listing_id = str(item.get(id_key))
+                        break
+                
+                # Derive from URL if still empty
+                if not source_listing_id and url:
+                    match = re.search(r'/itm/(\d{6,})', url)
+                    if not match:
+                        match = re.search(r'[?&]itm=(\d{6,})', url)
+                    if not match:
+                        match = re.search(r'/p/(\d{6,})', url)
+                    if match:
+                        source_listing_id = match.group(1)
+                
+                # Categorize the item
+                if not url:
+                    skipped_items["no_url"].append({
+                        "index": i,
+                        "title": item.get('title', 'N/A'),
+                        "keys_present": [k for k in ['url', 'debug_url', 'href', 'link', 'permalink'] if item.get(k)]
+                    })
+                elif not source_listing_id:
+                    skipped_items["no_id"].append({
+                        "index": i,
+                        "title": item.get('title', 'N/A'),
+                        "url": url[:100] + "..." if len(url) > 100 else url,
+                        "keys_present": [k for k in ['source_listing_id', 'listing_id', 'id', 'itemId', 'ebay_id'] if item.get(k)]
+                    })
+                else:
+                    # This shouldn't happen, but log it
+                    print(f"[ingest] Item {i} has both url and id but wasn't accepted - investigate! (trace: {trace_id})")
+            
+            # Log detailed skip reasons with samples
+            for reason, items in skipped_items.items():
+                if items:
+                    print(f"[ingest] Skipped '{reason}': {len(items)} items (trace: {trace_id})")
+                    for item in items[:3]:  # Show first 3 examples
+                        if reason == "no_url":
+                            print(f"  - Item {item['index']}: title='{item['title'][:50]}...' missing URL (had keys: {item['keys_present']})")
+                        elif reason == "no_id":
+                            print(f"  - Item {item['index']}: title='{item['title'][:50]}...' url={item['url']} missing ID (had keys: {item['keys_present']})")
+        
         # Always return 200 JSON with consistent format
         response_data = {
             "ok": True,
