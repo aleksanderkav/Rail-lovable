@@ -35,10 +35,10 @@ import re
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 EBAY_ID_REGEXES = [
-    re.compile(r"/itm/(\d{6,})"),
-    re.compile(r"[?&]itm=(\d{6,})"),
-    re.compile(r"/p/(\d{6,})"),
-    re.compile(r"/\d{6,}(?:\?|$)"),
+    re.compile(r"/itm/(\d{6,})(?:[/?#]|$)"),  # /itm/123456789 or /itm/123456789?param=value
+    re.compile(r"[?&]itm=(\d{6,})(?:&|#|$)"),  # ?itm=123456789&other=value or ?itm=123456789#fragment
+    re.compile(r"/p/(\d{6,})(?:[/?#]|$)"),  # /p/123456789 or /p/123456789?param=value
+    re.compile(r"/\d{6,}(?:\?|$)"),  # Fallback for other numeric patterns
 ]
 
 def extract_ebay_id(url: str) -> str | None:
@@ -352,10 +352,13 @@ def cors_guard(origin: str = Header(None), response: Response = None, request: R
     try:
         # Always set trace ID for CORS tracking
         trace_id = str(uuid.uuid4())[:8]
-        response.headers["x-trace-id"] = trace_id
+        response.headers["X-Trace-Id"] = trace_id
         
         response.headers["Vary"] = "Origin"
-        response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+        
         if origin and _is_allowed_origin(origin):
             response.headers["Access-Control-Allow-Origin"] = origin
         else:
@@ -1201,13 +1204,15 @@ async def smoketest():
 @router.options("/scrape-now", dependencies=[Depends(cors_guard)])
 def scrape_now_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
     return Response(status_code=200)
 
 @router.options("/scrape-now/", dependencies=[Depends(cors_guard)])
 def scrape_now_trailing_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
     return Response(status_code=200)
 
 @router.options("/admin/diag-ef", dependencies=[Depends(cors_guard)])
@@ -3312,7 +3317,7 @@ async def ingest(request: IngestRequest, http_request: Request):
             
             # Normalize URL with fallbacks - expanded to include more URL fields
             url = None
-            url_sources = ['url', 'debug_url', 'href', 'link', 'permalink', 'viewItemURL', 'itemWebUrl']
+            url_sources = ['url', 'permalink', 'href', 'link', 'debug_url', 'viewItemURL', 'itemWebUrl', 'item_url', 'productUrl', 'linkHref']
             for url_key in url_sources:
                 if item.get(url_key):
                     url = item.get(url_key)
@@ -3322,7 +3327,7 @@ async def ingest(request: IngestRequest, http_request: Request):
             
             # Normalize source_listing_id with fallbacks
             source_listing_id = None
-            id_sources = ['source_listing_id', 'listing_id', 'id', 'itemId', 'ebay_id']
+            id_sources = ['source_listing_id', 'listing_id', 'id', 'itemId', 'item_id', 'ebay_id', 'itemIdStr']
             for id_key in id_sources:
                 if item.get(id_key):
                     source_listing_id = str(item.get(id_key))
@@ -3339,7 +3344,13 @@ async def ingest(request: IngestRequest, http_request: Request):
                     if i < 3:  # Log first 3 items
                         print(f"[ingest] item#{i+1} derived id from URL: {source_listing_id}")
             
-            # Check for required fields
+            # Synthesize URL from ID if missing but ID present
+            if not url and source_listing_id:
+                url = f"https://www.ebay.com/itm/{source_listing_id}"
+                if i < 3:  # Log first 3 items
+                    print(f"[ingest] item#{i+1} synthesized URL from ID: {url}")
+            
+            # Check for required fields AFTER applying all fallbacks
             if not url:
                 skip_counters["no_url"] += 1
                 continue
