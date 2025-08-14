@@ -396,6 +396,7 @@ class ScrapeRequest(BaseModel):
     query: str
     dryRun: Optional[bool] = False
     instant: Optional[bool] = False
+    ingest: Optional[bool] = False
 
 class Item(BaseModel):
     """Scraped item with AI enrichment support"""
@@ -493,6 +494,47 @@ class IngestItemsResponse(BaseModel):
     count: int
     items: List[Dict[str, Any]]  # Per-item results from EF
     trace: str
+
+# New models for Lovable integration
+class IngestRequest(BaseModel):
+    """Request for /ingest endpoint"""
+    query: str
+    marketplace: str = "ebay"
+    items: List[Dict[str, Any]]
+
+class IngestItem(BaseModel):
+    """Individual item for ingestion"""
+    title: str
+    url: str
+    source_listing_id: str
+    price: Optional[float] = None
+    currency: Optional[str] = "USD"
+    sold: bool = False
+    ended_at: Optional[str] = None
+
+class IngestResponse(BaseModel):
+    """Response for /ingest endpoint"""
+    status: str
+    card_id: Optional[str] = None
+    inserted: int
+    trace_id: str
+
+class AdminCardsResponse(BaseModel):
+    """Response for /admin/cards endpoint"""
+    cards: List[Dict[str, Any]]
+    count: int
+    trace_id: str
+
+class AdminListingsResponse(BaseModel):
+    """Response for /admin/listings endpoint"""
+    listings: List[Dict[str, Any]]
+    count: int
+    trace_id: str
+
+class ErrorResponse(BaseModel):
+    """Error response format"""
+    error: str
+    trace_id: str
 
 def normalize_scraper_response(scraper_data: Dict[str, Any]) -> NormalizedResponse:
     """Normalize scraper response into expected format with enriched fields"""
@@ -1913,6 +1955,42 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                 ef_body = "Edge Function not configured"
                 external_ok = False
             
+            # Check if instant ingest is requested
+            instant_ingest = (
+                request.ingest or 
+                http_request.headers.get("X-Ingest", "").lower() in ["1", "true", "t", "yes", "on"]
+            )
+            
+            if instant_mode and instant_ingest and merged:
+                print(f"[api] Instant ingest requested - calling internal ingest routine (trace: {trace_id})")
+                try:
+                    # Prepare items for ingestion
+                    ingest_items = []
+                    for item in merged:
+                        if item.get("url") and item.get("source_listing_id"):
+                            ingest_items.append({
+                                "title": item.get("title", ""),
+                                "url": item.get("url"),
+                                "source_listing_id": item.get("source_listing_id"),
+                                "price": item.get("price"),
+                                "currency": item.get("currency", "USD"),
+                                "sold": item.get("sold", False),
+                                "ended_at": item.get("ended_at")
+                            })
+                    
+                    if ingest_items:
+                        # Call internal ingest
+                        ingest_response = await ingest_internal(query, "ebay", ingest_items, trace_id)
+                        if ingest_response.get("ok"):
+                            print(f"[api] Instant ingest successful: {ingest_response.get('ingestSummary', {})} (trace: {trace_id})")
+                            response["instantIngest"] = ingest_response
+                        else:
+                            print(f"[api] Instant ingest failed: {ingest_response.get('error')} (trace: {trace_id})")
+                            response["instantIngest"] = {"ok": False, "error": ingest_response.get("error")}
+                except Exception as e:
+                    print(f"[api] Instant ingest error: {e} (trace: {trace_id})")
+                    response["instantIngest"] = {"ok": False, "error": str(e)}
+            
             # Prepare response
             total_time = time.time() - scraper_start
             
@@ -3158,6 +3236,571 @@ def admin_wildcard_options(rest_of_path: str, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
     return Response(status_code=200)
+
+@router.post("/ingest")
+async def ingest(request: IngestRequest, http_request: Request):
+    """Ingest items into the database with upsert logic"""
+    trace_id = str(uuid.uuid4())[:8]
+    client_ip = http_request.client.host if http_request.client else "unknown"
+    
+    # Validate admin token
+    admin_token = http_request.headers.get("X-Admin-Token")
+    expected_token = get_admin_proxy_token()
+    
+    if not admin_token or admin_token != expected_token:
+        return JSONResponse(
+            content=ErrorResponse(
+                error="Unauthorized",
+                trace_id=trace_id
+            ).dict(),
+            status_code=401,
+            headers={"x-trace-id": trace_id}
+        )
+    
+    print(f"[api] /ingest request from {client_ip} query='{request.query}' marketplace='{request.marketplace}' items={len(request.items)} (trace: {trace_id})")
+    
+    # Check if this is a dry run
+    dry_run = http_request.query_params.get("dryRun", "").lower() in ["1", "true", "t", "yes", "on"]
+    
+    if dry_run:
+        print(f"[api] DRY RUN mode - simulating ingestion (trace: {trace_id})")
+    
+    try:
+        # Validate items - reject items without url or source_listing_id
+        valid_items = []
+        skipped_items = []
+        
+        for item in request.items:
+            if not item.get("url") or not item.get("source_listing_id"):
+                skipped_items.append({
+                    "reason": "missing_url_or_id",
+                    "item": item
+                })
+                continue
+            
+            # Normalize URL using existing helper
+            normalized_url = canonicalize_ebay_url(item["url"])
+            
+            # Create validated item
+            valid_item = {
+                "title": item.get("title", ""),
+                "url": normalized_url,
+                "source_listing_id": item["source_listing_id"],
+                "price": item.get("price"),
+                "currency": item.get("currency", "USD"),
+                "sold": item.get("sold", False),
+                "ended_at": item.get("ended_at")
+            }
+            valid_items.append(valid_item)
+        
+        print(f"[api] Validation complete: {len(valid_items)} valid, {len(skipped_items)} skipped (trace: {trace_id})")
+        
+        if not valid_items:
+            return JSONResponse(
+                content=IngestResponse(
+                    status="success",
+                    card_id=None,
+                    inserted=0,
+                    trace_id=trace_id
+                ).dict(),
+                headers={"x-trace-id": trace_id}
+            )
+        
+        if dry_run:
+            # Return summary without database operations
+            return JSONResponse(
+                content=IngestResponse(
+                    status="success",
+                    card_id="dry-run-simulation",
+                    inserted=len(valid_items),
+                    trace_id=trace_id
+                ).dict(),
+                headers={"x-trace-id": trace_id}
+            )
+        
+        # Database operations using service role
+        service_role_key = get_service_role_key()
+        supabase_url = get_supabase_url()
+        
+        if not service_role_key or not supabase_url:
+            return JSONResponse(
+                content=ErrorResponse(
+                    error="Service not configured",
+                    trace_id=trace_id
+                ).dict(),
+                status_code=500,
+                headers={"x-trace-id": trace_id}
+            )
+        
+        # Step 1: Upsert card
+        card_id = await upsert_card(
+            supabase_url, service_role_key, 
+            request.marketplace, request.query, trace_id
+        )
+        
+        if not card_id:
+            return JSONResponse(
+                content=ErrorResponse(
+                    error="Failed to create/update card",
+                    trace_id=trace_id
+                ).dict(),
+                status_code=500,
+                headers={"x-trace-id": trace_id}
+            )
+        
+        # Step 2: Upsert listings
+        listings_created = await upsert_listings(
+            supabase_url, service_role_key,
+            card_id, valid_items, trace_id
+        )
+        
+        print(f"[api] Ingestion complete: card_id={card_id}, listings_created={listings_created} (trace: {trace_id})")
+        
+        return JSONResponse(
+            content=IngestResponse(
+                status="success",
+                card_id=card_id,
+                inserted=listings_created,
+                trace_id=trace_id
+            ).dict(),
+            headers={"x-trace-id": trace_id}
+        )
+        
+    except Exception as e:
+        print(f"[api] /ingest error: {e} (trace: {trace_id})")
+        return JSONResponse(
+            content=ErrorResponse(
+                error=str(e),
+                trace_id=trace_id
+            ).dict(),
+            status_code=500,
+            headers={"x-trace-id": trace_id}
+        )
+
+@router.options("/ingest", dependencies=[Depends(cors_guard)])
+def ingest_options(response: Response):
+    response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
+    return Response(status_code=200)
+
+@router.get("/admin/cards")
+async def admin_cards(request: Request, search: Optional[str] = None, limit: int = 50):
+    """Admin endpoint to list cards from database"""
+    trace_id = str(uuid.uuid4())[:8]
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Check admin token
+    admin_token = request.headers.get("X-Admin-Token")
+    expected_token = get_admin_proxy_token()
+    
+    if not admin_token or admin_token != expected_token:
+        return JSONResponse(
+            content=ErrorResponse(
+                error="Unauthorized",
+                trace_id=trace_id
+            ).dict(),
+            status_code=401,
+            headers={"x-trace-id": trace_id}
+        )
+    
+    # Validate limit parameter
+    if limit > 1000:
+        limit = 1000
+    elif limit < 1:
+        limit = 1
+    
+    print(f"[api] /admin/cards called from {client_ip} search='{search}' limit={limit} (trace: {trace_id})")
+    
+    try:
+        # Call Supabase REST API with service role key
+        service_role_key = get_service_role_key()
+        supabase_url = get_supabase_url()
+        
+        if not service_role_key or not supabase_url:
+            return JSONResponse(
+                content=ErrorResponse(
+                    error="Service not configured",
+                    trace_id=trace_id
+                ).dict(),
+                status_code=500,
+                headers={"x-trace-id": trace_id}
+            )
+        
+        # Build Supabase REST API URL
+        rest_url = f"{supabase_url}/rest/v1/cards"
+        params = {
+            "select": "*",
+            "order": "created_at.desc",
+            "limit": min(limit, 1000)
+        }
+        
+        # Add search filter if provided
+        if search:
+            params["query"] = f"ilike.%{search}%"
+        
+        headers = {
+            "Authorization": f"Bearer {service_role_key}",
+            "apikey": service_role_key,
+            "Content-Type": "application/json"
+        }
+        
+        print(f"[api] Calling Supabase REST: {rest_url} (trace: {trace_id})")
+        
+        response = await http_client.get(rest_url, headers=headers, params=params)
+        
+        if response.status_code == 200:
+            cards = response.json()
+            print(f"[api] Retrieved {len(cards)} cards (trace: {trace_id})")
+            return JSONResponse(
+                content=AdminCardsResponse(
+                    cards=cards,
+                    count=len(cards),
+                    trace_id=trace_id
+                ).dict(),
+                headers={"x-trace-id": trace_id}
+            )
+        else:
+            # Return empty array with error details
+            sb_request_id = response.headers.get("sb-request-id", "unknown")
+            print(f"[api] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
+            return JSONResponse(
+                content=ErrorResponse(
+                    error=f"Database error: {response.status_code}",
+                    trace_id=trace_id
+                ).dict(),
+                status_code=500,
+                headers={"x-trace-id": trace_id}
+            )
+        
+    except Exception as e:
+        print(f"[api] /admin/cards error: {e} (trace: {trace_id})")
+        return JSONResponse(
+            content=ErrorResponse(
+                error=str(e),
+                trace_id=trace_id
+            ).dict(),
+            status_code=500,
+            headers={"x-trace-id": trace_id}
+        )
+
+@router.get("/admin/listings")
+async def admin_listings(request: Request, card_id: str, limit: int = 100):
+    """Admin endpoint to list listings from database"""
+    trace_id = str(uuid.uuid4())[:8]
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Check admin token
+    admin_token = request.headers.get("X-Admin-Token")
+    expected_token = get_admin_proxy_token()
+    
+    if not admin_token or admin_token != expected_token:
+        return JSONResponse(
+            content=ErrorResponse(
+                error="Unauthorized",
+                trace_id=trace_id
+            ).dict(),
+            status_code=401,
+            headers={"x-trace-id": trace_id}
+        )
+    
+    # Validate card_id is provided
+    if not card_id:
+        return JSONResponse(
+            content=ErrorResponse(
+                error="card_id is required",
+                trace_id=trace_id
+            ).dict(),
+            status_code=400,
+            headers={"x-trace-id": trace_id}
+        )
+    
+    # Validate limit parameter
+    if limit > 1000:
+        limit = 1000
+    elif limit < 1:
+        limit = 1
+    
+    print(f"[api] /admin/listings called from {client_ip} card_id={card_id} limit={limit} (trace: {trace_id})")
+    
+    try:
+        # Call Supabase REST API with service role key
+        service_role_key = get_service_role_key()
+        supabase_url = get_supabase_url()
+        
+        if not service_role_key or not supabase_url:
+            return JSONResponse(
+                content=ErrorResponse(
+                    error="Service not configured",
+                    trace_id=trace_id
+                ).dict(),
+                status_code=500,
+                headers={"x-trace-id": trace_id}
+            )
+        
+        # Build Supabase REST API URL
+        rest_url = f"{supabase_url}/rest/v1/listings"
+        params = {
+            "select": "*",
+            "order": "created_at.desc",
+            "limit": min(limit, 1000),
+            "card_id": f"eq.{card_id}"
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {service_role_key}",
+            "apikey": service_role_key,
+            "Content-Type": "application/json"
+        }
+        
+        print(f"[api] Calling Supabase REST: {rest_url} (trace: {trace_id})")
+        
+        response = await http_client.get(rest_url, headers=headers, params=params)
+        
+        if response.status_code == 200:
+            listings = response.json()
+            print(f"[api] Retrieved {len(listings)} listings (trace: {trace_id})")
+            return JSONResponse(
+                content=AdminListingsResponse(
+                    listings=listings,
+                    count=len(listings),
+                    trace_id=trace_id
+                ).dict(),
+                headers={"x-trace-id": trace_id}
+            )
+        else:
+            # Return error details
+            sb_request_id = response.headers.get("sb-request-id", "unknown")
+            print(f"[api] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
+            return JSONResponse(
+                content=ErrorResponse(
+                    error=f"Database error: {response.status_code}",
+                    trace_id=trace_id
+                ).dict(),
+                status_code=500,
+                headers={"x-trace-id": trace_id}
+            )
+        
+    except Exception as e:
+        print(f"[api] /admin/listings error: {e} (trace: {trace_id})")
+        return JSONResponse(
+            content=ErrorResponse(
+                error=str(e),
+                trace_id=trace_id
+            ).dict(),
+            status_code=500,
+            headers={"x-trace-id": trace_id}
+        )
+
+@router.options("/admin/cards", dependencies=[Depends(cors_guard)])
+def admin_cards_options(response: Response):
+    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
+    return Response(status_code=200)
+
+@router.options("/admin/listings", dependencies=[Depends(cors_guard)])
+def admin_listings_options(response: Response):
+    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
+    return Response(status_code=200)
+
+# Helper functions for database operations
+async def upsert_card(supabase_url: str, service_role_key: str, marketplace: str, query: str, trace_id: str) -> Optional[str]:
+    """Upsert a card and return the card_id"""
+    try:
+        # First try to find existing card
+        rest_url = f"{supabase_url}/rest/v1/cards"
+        params = {
+            "select": "id",
+            "marketplace": f"eq.{marketplace}",
+            "query": f"eq.{query}"
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {service_role_key}",
+            "apikey": service_role_key,
+            "Content-Type": "application/json"
+        }
+        
+        response = await http_client.get(rest_url, headers=headers, params=params)
+        
+        if response.status_code == 200:
+            existing_cards = response.json()
+            if existing_cards:
+                # Card exists, return its ID
+                card_id = existing_cards[0]["id"]
+                print(f"[api] Found existing card: {card_id} (trace: {trace_id})")
+                return card_id
+        
+        # Card doesn't exist, create new one
+        create_payload = {
+            "marketplace": marketplace,
+            "query": query
+        }
+        
+        create_response = await http_client.post(
+            rest_url,
+            json=create_payload,
+            headers=headers
+        )
+        
+        if create_response.status_code == 201:
+            new_card = create_response.json()
+            card_id = new_card[0]["id"]
+            print(f"[api] Created new card: {card_id} (trace: {trace_id})")
+            return card_id
+        else:
+            print(f"[api] Failed to create card: {create_response.status_code} - {create_response.text} (trace: {trace_id})")
+            return None
+            
+    except Exception as e:
+        print(f"[api] Error in upsert_card: {e} (trace: {trace_id})")
+        return None
+
+async def upsert_listings(supabase_url: str, service_role_key: str, card_id: str, items: List[Dict[str, Any]], trace_id: str) -> int:
+    """Upsert listings and return count of created/updated items"""
+    try:
+        rest_url = f"{supabase_url}/rest/v1/listings"
+        headers = {
+            "Authorization": f"Bearer {service_role_key}",
+            "apikey": service_role_key,
+            "Content-Type": "application/json"
+        }
+        
+        created_count = 0
+        
+        for item in items:
+            # Check if listing already exists
+            check_params = {
+                "select": "id",
+                "card_id": f"eq.{card_id}",
+                "source_listing_id": f"eq.{item['source_listing_id']}"
+            }
+            
+            check_response = await http_client.get(rest_url, headers=headers, params=check_params)
+            
+            if check_response.status_code == 200:
+                existing_listings = check_response.json()
+                if existing_listings:
+                    # Listing exists, skip
+                    print(f"[api] Listing already exists: {item['source_listing_id']} (trace: {trace_id})")
+                    continue
+            
+            # Create new listing
+            listing_payload = {
+                "card_id": card_id,
+                "title": item["title"],
+                "url": item["url"],
+                "source_listing_id": item["source_listing_id"],
+                "price": item["price"],
+                "currency": item["currency"],
+                "sold": item["sold"],
+                "ended_at": item["ended_at"]
+            }
+            
+            create_response = await http_client.post(
+                rest_url,
+                json=listing_payload,
+                headers=headers
+            )
+            
+            if create_response.status_code == 201:
+                created_count += 1
+                print(f"[api] Created listing: {item['source_listing_id']} (trace: {trace_id})")
+            else:
+                print(f"[api] Failed to create listing: {create_response.status_code} - {create_response.text} (trace: {trace_id})")
+        
+        print(f"[api] Created {created_count} new listings (trace: {trace_id})")
+        return created_count
+        
+    except Exception as e:
+        print(f"[api] Error in upsert_listings: {e} (trace: {trace_id})")
+        return 0
+
+async def ingest_internal(query: str, marketplace: str, items: List[Dict[str, Any]], trace_id: str) -> Dict[str, Any]:
+    """Internal ingest function for instant mode integration"""
+    try:
+        # Validate items - reject items without url or source_listing_id
+        valid_items = []
+        skipped_items = []
+        
+        for item in items:
+            if not item.get("url") or not item.get("source_listing_id"):
+                skipped_items.append({
+                    "reason": "missing_url_or_id",
+                    "item": item
+                })
+                continue
+            
+            # Normalize URL using existing helper
+            normalized_url = canonicalize_ebay_url(item["url"])
+            
+            # Create validated item
+            valid_item = {
+                "title": item.get("title", ""),
+                "url": normalized_url,
+                "source_listing_id": item["source_listing_id"],
+                "price": item.get("price"),
+                "currency": item.get("currency", "USD"),
+                "sold": item.get("sold", False),
+                "ended_at": item.get("ended_at")
+            }
+            valid_items.append(valid_item)
+        
+        if not valid_items:
+            return {
+                "ok": True,
+                "card_id": None,
+                "ingestSummary": {
+                    "accepted": 0,
+                    "skipped": len(skipped_items),
+                    "total": len(items)
+                }
+            }
+        
+        # Database operations using service role
+        service_role_key = get_service_role_key()
+        supabase_url = get_supabase_url()
+        
+        if not service_role_key or not supabase_url:
+            return {
+                "ok": False,
+                "error": "Service not configured"
+            }
+        
+        # Step 1: Upsert card
+        card_id = await upsert_card(
+            supabase_url, service_role_key, 
+            marketplace, query, trace_id
+        )
+        
+        if not card_id:
+            return {
+                "ok": False,
+                "error": "Failed to create/update card"
+            }
+        
+        # Step 2: Upsert listings
+        listings_created = await upsert_listings(
+            supabase_url, service_role_key,
+            card_id, valid_items, trace_id
+        )
+        
+        return {
+            "ok": True,
+            "card_id": card_id,
+            "ingestSummary": {
+                "accepted": len(valid_items),
+                "skipped": len(skipped_items),
+                "total": len(items)
+            }
+        }
+        
+    except Exception as e:
+        print(f"[api] Error in ingest_internal: {e} (trace: {trace_id})")
+        return {
+            "ok": False,
+            "error": str(e)
+        }
 
 # Debug endpoint to test eBay scraper directly
 @router.get("/debug/scrape-ebay")
