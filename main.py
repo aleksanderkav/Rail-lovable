@@ -299,13 +299,19 @@ http_client = httpx.AsyncClient(
 
 app = FastAPI(title="Rail-lovable Scraper", version="1.0.0")
 
-# Global CORS middleware
+# Global CORS middleware - ensure Lovable origins are explicitly allowed
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=[
+        "https://card-pulse-watch.lovable.app",
+        "https://*.lovable.app",
+        "https://*.lovableproject.com",
+        "http://localhost:3000",
+        "http://localhost:5173",
+    ],
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*", "X-Admin-Token", "Content-Type"],
-    expose_headers=["x-trace-id"],
+    expose_headers=["X-Trace-Id"],
     allow_credentials=True,
 )
 
@@ -1081,7 +1087,7 @@ async def diag_ef(ping: Optional[str] = None):
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }, status_code=500)
 
-@router.post("/admin/merge-cards", dependencies=[Depends(cors_guard)])
+@router.post("/admin/merge-cards")
 async def admin_merge_cards(request: Request):
     """Admin endpoint to proxy merge-cards requests to Edge Function"""
     trace_id = str(uuid.uuid4())[:8]
@@ -1201,7 +1207,7 @@ async def smoketest():
             headers={"X-Trace-Id": trace_id}
         )
 
-@router.options("/scrape-now", dependencies=[Depends(cors_guard)])
+@router.options("/scrape-now")
 def scrape_now_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
@@ -1221,14 +1227,14 @@ async def scrape_now_get():
         headers={"X-Trace-Id": _trace()}
     )
 
-@router.options("/scrape-now/", dependencies=[Depends(cors_guard)])
+@router.options("/scrape-now/")
 def scrape_now_trailing_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
     return Response(status_code=200)
 
-@router.options("/scrape-now-fast", dependencies=[Depends(cors_guard)])
+@router.options("/scrape-now-fast")
 def scrape_now_fast_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
@@ -1248,43 +1254,43 @@ async def scrape_now_fast_get():
         headers={"X-Trace-Id": _trace()}
     )
 
-@router.options("/admin/diag-ef", dependencies=[Depends(cors_guard)])
+@router.options("/admin/diag-ef")
 def diag_ef_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     return Response(status_code=200)
 
-@router.options("/admin/diag-db", dependencies=[Depends(cors_guard)])
+@router.options("/admin/diag-db")
 def diag_db_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     return Response(status_code=200)
 
-@router.options("/admin/logs", dependencies=[Depends(cors_guard)])
+@router.options("/admin/logs")
 def logs_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     return Response(status_code=200)
 
-@router.options("/admin/tracked-queries", dependencies=[Depends(cors_guard)])
+@router.options("/admin/tracked-queries")
 def tq_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     return Response(status_code=200)
 
-@router.options("/admin/health", dependencies=[Depends(cors_guard)])
+@router.options("/admin/health")
 def health_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     return Response(status_code=200)
 
-@router.options("/admin/merge-cards", dependencies=[Depends(cors_guard)])
+@router.options("/admin/merge-cards")
 def merge_cards_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     return Response(status_code=200)
 
-@router.get("/admin/logs", dependencies=[Depends(cors_guard)])
+@router.get("/admin/logs")
 async def admin_logs(request: Request, limit: int = 200):
     """Admin endpoint to proxy logs requests to Supabase REST API"""
     trace_id = str(uuid.uuid4())[:8]
@@ -1387,7 +1393,7 @@ async def admin_logs(request: Request, limit: int = 200):
             status_code=200  # Always 200 to prevent UI crashes
         )
 
-@router.get("/admin/tracked-queries", dependencies=[Depends(cors_guard)])
+@router.get("/admin/tracked-queries")
 async def admin_tracked_queries(request: Request, limit: int = 200):
     """Admin endpoint to proxy tracked-queries requests to Supabase REST API"""
     trace_id = str(uuid.uuid4())[:8]
@@ -1576,7 +1582,7 @@ async def admin_diag_supabase(request: Request):
             status_code=200  # Always 200 to prevent UI crashes
         )
 
-@router.post("/scrape-now", dependencies=[Depends(cors_guard)])
+@router.post("/scrape-now")
 async def scrape_now(request: ScrapeRequest, http_request: Request):
     """
     On-demand scraping endpoint for Lovable.
@@ -2684,7 +2690,7 @@ async def ingest_items(request: IngestItemsRequest, http_request: Request):
             }
         )
 
-@router.get("/admin/diag-db", dependencies=[Depends(cors_guard)])
+@router.get("/admin/diag-db")
 async def admin_diag_db(request: Request):
     """Quick diagnostics endpoint to test Supabase REST API connectivity"""
     trace_id = str(uuid.uuid4())[:8]
@@ -2759,7 +2765,7 @@ async def admin_diag_db(request: Request):
 
 
 
-@router.get("/admin/health", dependencies=[Depends(cors_guard)])
+@router.get("/admin/health")
 async def admin_health(request: Request):
     """Comprehensive health check endpoint for admin monitoring"""
     trace_id = str(uuid.uuid4())[:8]
@@ -3463,7 +3469,7 @@ def parse_ebay_card(card, query: str, mode: str) -> Optional[Dict[str, Any]]:
         print(f"[scraper] Error parsing card: {e}")
         return None
 
-@router.get("/admin/diag-ef", dependencies=[Depends(cors_guard)])
+@router.get("/admin/diag-ef")
 async def admin_diag_ef(request: Request):
     """Quick diagnostics endpoint to test Edge Function connectivity via ingest path"""
     trace_id = str(uuid.uuid4())[:8]
@@ -3551,13 +3557,13 @@ async def admin_diag_ef(request: Request):
 
 
 
-@router.options("/ingest-items", dependencies=[Depends(cors_guard)])
+@router.options("/ingest-items")
 def ingest_items_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
     return Response(status_code=200)
 
-@router.options("/admin/{rest_of_path:path}", dependencies=[Depends(cors_guard)])
+@router.options("/admin/{rest_of_path:path}")
 def admin_wildcard_options(rest_of_path: str, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
@@ -3854,21 +3860,21 @@ async def ingest(request: IngestRequest, http_request: Request):
             headers={"X-Trace-Id": trace_id}
         )
 
-@router.options("/ingest", dependencies=[Depends(cors_guard)])
+@router.options("/ingest")
 def ingest_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
     return Response(status_code=200)
 
-@router.options("/admin/cards", dependencies=[Depends(cors_guard)])
+@router.options("/admin/cards")
 def admin_cards_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
     return Response(status_code=200)
 
-@router.options("/admin/listings", dependencies=[Depends(cors_guard)])
+@router.options("/admin/listings")
 def admin_listings_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
@@ -4404,26 +4410,7 @@ async def admin_logs(request: Request, limit: int = 1):
             headers={"X-Trace-Id": trace_id}
         )
 
-@router.options("/admin/diag-db", dependencies=[Depends(cors_guard)])
-def admin_diag_db_options(response: Response):
-    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
-    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    return Response(status_code=200)
 
-@router.options("/admin/diag-ef", dependencies=[Depends(cors_guard)])
-def admin_diag_ef_options(response: Response):
-    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
-    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    return Response(status_code=200)
-
-@router.options("/admin/logs", dependencies=[Depends(cors_guard)])
-def admin_logs_options(response: Response):
-    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
-    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    return Response(status_code=200)
 
 # Helper functions for database operations
 async def upsert_card(supabase_url: str, service_role_key: str, marketplace: str, query: str, trace_id: str) -> Optional[str]:
