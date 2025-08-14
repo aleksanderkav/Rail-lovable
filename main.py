@@ -3301,7 +3301,6 @@ async def ingest(request: IngestRequest, http_request: Request):
             
             # Derive source_listing_id from URL if still empty
             if not source_listing_id and url:
-                import re
                 # Try /itm/<digits>
                 match = re.search(r'/itm/(\d{6,})', url)
                 if not match:
