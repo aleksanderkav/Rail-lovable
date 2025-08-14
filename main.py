@@ -283,7 +283,7 @@ async def post_item_to_edge_function(item: Dict[str, Any], query: str) -> tuple[
 #     return f
 
 # Timeout constants
-SCRAPER_TIMEOUT = 12.0
+SCRAPER_TIMEOUT = 25.0
 EF_TIMEOUT = 8.0
 GLOBAL_TIMEOUT = 60.0
 
@@ -1208,12 +1208,45 @@ def scrape_now_options(response: Response):
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
     return Response(status_code=200)
 
+@router.get("/scrape-now")
+async def scrape_now_get():
+    """GET method not allowed for scrape endpoint"""
+    return JSONResponse(
+        content={
+            "ok": False,
+            "detail": "Method not allowed. Use POST for scraping.",
+            "trace": _trace()
+        },
+        status_code=405,
+        headers={"X-Trace-Id": _trace()}
+    )
+
 @router.options("/scrape-now/", dependencies=[Depends(cors_guard)])
 def scrape_now_trailing_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
     return Response(status_code=200)
+
+@router.options("/scrape-now-fast", dependencies=[Depends(cors_guard)])
+def scrape_now_fast_options(response: Response):
+    response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    return Response(status_code=200)
+
+@router.get("/scrape-now-fast")
+async def scrape_now_fast_get():
+    """GET method not allowed for fast scrape endpoint"""
+    return JSONResponse(
+        content={
+            "ok": False,
+            "detail": "Method not allowed. Use POST for fast scraping.",
+            "trace": _trace()
+        },
+        status_code=405,
+        headers={"X-Trace-Id": _trace()}
+    )
 
 @router.options("/admin/diag-ef", dependencies=[Depends(cors_guard)])
 def diag_ef_options(response: Response):
@@ -1798,6 +1831,53 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
             item_titles = [item.title for item in normalized_data.items[:2]]
             print(f"[api] First titles: {item_titles}")
             
+            # Step 2.5: Apply normalization safety-net (server-side too)
+            print(f"[api] Step 2.5: Applying normalization safety-net (trace: {trace_id})")
+            missing_url_count = 0
+            missing_id_count = 0
+            
+            for item in normalized_data.items:
+                # Apply the same normalization logic as /ingest
+                url_sources = ['url', 'permalink', 'href', 'link', 'debug_url', 'viewItemURL', 'itemWebUrl', 'item_url', 'productUrl', 'linkHref']
+                id_sources = ['source_listing_id', 'listing_id', 'id', 'itemId', 'item_id', 'ebay_id', 'itemIdStr']
+                
+                # Find URL from multiple sources
+                url = None
+                for source in url_sources:
+                    if getattr(item, source, None):
+                        url = getattr(item, source)
+                        break
+                
+                # Find ID from multiple sources
+                source_listing_id = None
+                for source in id_sources:
+                    if getattr(item, source, None):
+                        source_listing_id = getattr(item, source)
+                        break
+                
+                # Derive source_listing_id from URL if still empty
+                if not source_listing_id and url:
+                    ebay_id = extract_ebay_id(url)
+                    if ebay_id:
+                        source_listing_id = ebay_id
+                        # Update the item with derived ID
+                        item.source_listing_id = ebay_id
+                
+                # Synthesize URL from ID if missing but ID present
+                if not url and source_listing_id:
+                    url = f"https://www.ebay.com/itm/{source_listing_id}"
+                    # Update the item with synthesized URL
+                    item.url = url
+                
+                # Count missing fields after normalization
+                if not url:
+                    missing_url_count += 1
+                
+                if not source_listing_id:
+                    missing_id_count += 1
+            
+            print(f"[api] Safety-net applied: missing_url={missing_url_count} missing_id={missing_id_count} (trace: {trace_id})")
+            
             # Step 3: Post to Edge Function (optional - don't fail if this times out)
             ef_status = None
             ef_body = ""
@@ -1862,7 +1942,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                             "total": total_items
                         }
                         
-                        print(f"[api] scrape-now q=\"{query}\" items={len(normalized_data.items)} dur={total_time:.1f}s (trace: {trace_id})")
+                        print(f"[api] scrape-now q=\"{query}\" items={len(normalized_data.items)} missing_url={missing_url_count} missing_id={missing_id_count} dur={total_time:.1f}s (trace: {trace_id})")
                         return JSONResponse(
                             content=response,
                             headers={
@@ -2063,7 +2143,7 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
                     "total": len(normalized_data.items)
                 })
             
-            print(f"[api] scrape-now q=\"{query}\" items={len(normalized_data.items)} dur={total_time:.1f}s (trace: {trace_id})")
+            print(f"[api] scrape-now q=\"{query}\" items={len(normalized_data.items)} missing_url={missing_url_count} missing_id={missing_id_count} dur={total_time:.1f}s (trace: {trace_id})")
             return JSONResponse(
                 content=response,
                 headers={
@@ -2097,6 +2177,214 @@ async def scrape_now(request: ScrapeRequest, http_request: Request):
 async def scrape_now_trailing(request: ScrapeRequest, http_request: Request):
     """Handle /scrape-now/ (with trailing slash) - redirect to main handler"""
     return await scrape_now(request, http_request)
+
+@app.post("/scrape-now-fast")
+async def scrape_now_fast(request: ScrapeRequest, http_request: Request):
+    """Fast scraping endpoint for instant results"""
+    query = request.query.strip()
+    
+    if not query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+    
+    # Get client IP and generate trace ID
+    client_ip = http_request.client.host if http_request.client else "unknown"
+    trace_id = str(uuid.uuid4())[:8]
+    
+    # Log the incoming request
+    print(f"[api] {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} Fast scrape request from {client_ip}: '{query}' (trace: {trace_id})")
+    
+    # Handle dryRun mode for health checks
+    if request.dryRun:
+        print(f"[api] DRY RUN mode - skipping actual processing (trace: {trace_id})")
+        return JSONResponse(
+            content={
+                "ok": True,
+                "dryRun": True,
+                "query": query,
+                "message": "Health check completed successfully",
+                "trace": trace_id
+            },
+            headers={
+                "X-Trace-Id": trace_id,
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+                "Access-Control-Allow-Headers": "*"
+            }
+        )
+    
+    # Always use instant mode for fast endpoint
+    instant_mode = True
+    print(f"[instant] start real_ebay_scraper q='{query}' trace={trace_id}")
+    
+    try:
+        t0 = time.time()
+        
+        # STEP 1: Fetch active and sold pages using the exact same helpers as /debug/scrape-ebay
+        print(f"[instant] STEP 1: Fetching eBay listings trace={trace_id}")
+        active_items = []
+        sold_items = []
+        
+        try:
+            print(f"[fetch] ebay GET active mode q='{query}' trace={trace_id}")
+            active_items = await scrape_ebay(query, mode="active")
+            print(f"[api] Active listings: {len(active_items)} items (trace: {trace_id})")
+            if active_items:
+                print(f"[api] First active item sample: url={active_items[0].get('url')}, id={active_items[0].get('source_listing_id')} trace={trace_id}")
+        except Exception as e:
+            print(f"[api] Active listings failed: {e} (trace: {trace_id})")
+            print(f"[api] Active listings exception type: {type(e).__name__} trace={trace_id}")
+            active_items = []
+        
+        try:
+            print(f"[fetch] ebay GET sold mode q='{query}' trace={trace_id}")
+            sold_items = await scrape_ebay(query, mode="sold")
+            print(f"[api] Sold listings: {len(sold_items)} items (trace: {trace_id})")
+            if sold_items:
+                print(f"[api] First sold item sample: url={active_items[0].get('url')}, id={active_items[0].get('source_listing_id')} trace={trace_id}")
+        except Exception as e:
+            print(f"[api] Sold listings failed: {e} (trace: {trace_id})")
+            print(f"[api] Sold listings exception type: {type(e).__name__} trace={trace_id}")
+            sold_items = []
+        
+        # STEP 2: Process and validate items using the same logic as debug endpoint
+        print(f"[instant] STEP 2: Processing and validating items trace={trace_id}")
+        print(f"[parse] Processing items: active={len(active_items)} sold={len(sold_items)} trace={trace_id}")
+        
+        merged = []
+        skipped = {"no_url": 0, "no_id": 0, "duplicate": 0}
+        seen = set()
+        
+        for lst in (active_items, sold_items):
+            for it in lst or []:
+                # Check if item has required fields
+                has_url = bool(it.get("url"))
+                has_id = bool(it.get("source_listing_id"))
+                
+                if not has_url:
+                    skipped["no_url"] += 1
+                    print(f"[parse] SKIP reason=no-url item={it.get('title', 'unknown')} trace={trace_id}")
+                    continue
+                
+                if not has_id:
+                    skipped["no_id"] += 1
+                    print(f"[parse] SKIP reason=no-id item={it.get('title', 'unknown')} trace={trace_id}")
+                    continue
+                
+                # Check for duplicates
+                item_key = f"{it.get('url')}_{it.get('source_listing_id')}"
+                if item_key in seen:
+                    skipped["duplicate"] += 1
+                    print(f"[parse] SKIP reason=duplicate item={it.get('title', 'unknown')} trace={trace_id}")
+                    continue
+                
+                seen.add(item_key)
+                merged.append(it)
+        
+        # STEP 3: Apply normalization safety-net
+        print(f"[instant] STEP 3: Applying normalization safety-net trace={trace_id}")
+        normalized_items = []
+        missing_url_count = 0
+        missing_id_count = 0
+        
+        for item in merged:
+            # Apply the same normalization logic as /ingest
+            url_sources = ['url', 'permalink', 'href', 'link', 'debug_url', 'viewItemURL', 'itemWebUrl', 'item_url', 'productUrl', 'linkHref']
+            id_sources = ['source_listing_id', 'listing_id', 'id', 'itemId', 'item_id', 'ebay_id', 'itemIdStr']
+            
+            # Find URL from multiple sources
+            url = None
+            for source in url_sources:
+                if item.get(source):
+                    url = item.get(source)
+                    break
+            
+            # Find ID from multiple sources
+            source_listing_id = None
+            for source in id_sources:
+                if item.get(source):
+                    source_listing_id = item.get(source)
+                    break
+            
+            # Derive source_listing_id from URL if still empty
+            if not source_listing_id and url:
+                ebay_id = extract_ebay_id(url)
+                if ebay_id:
+                    source_listing_id = ebay_id
+            
+            # Synthesize URL from ID if missing but ID present
+            if not url and source_listing_id:
+                url = f"https://www.ebay.com/itm/{source_listing_id}"
+            
+            # Only accept items with both URL and ID after normalization
+            if not url:
+                missing_url_count += 1
+                continue
+            
+            if not source_listing_id:
+                missing_id_count += 1
+                continue
+            
+            # Create normalized item
+            normalized_item = {
+                "title": item.get("title") or item.get("name") or "",
+                "url": url,
+                "source_listing_id": source_listing_id,
+                "price": parse_price(str(item.get("price") or item.get("amount") or ""))[0],
+                "currency": parse_price(str(item.get("price") or item.get("amount") or ""))[1] or "USD",
+                "sold": bool(item.get("sold") or item.get("is_sold")),
+                "ended_at": item.get("ended_at") or item.get("endTime")
+            }
+            
+            normalized_items.append(normalized_item)
+        
+        total_time = time.time() - t0
+        
+        # Log observability metrics
+        print(f"[api] scrape-now-fast q=\"{query}\" items={len(normalized_items)} missing_url={missing_url_count} missing_id={missing_id_count} dur={total_time:.1f}s (trace: {trace_id})")
+        
+        return JSONResponse(
+            content={
+                "ok": True,
+                "items": normalized_items,
+                "count": len(normalized_items),
+                "query": query,
+                "trace": trace_id,
+                "upstream": "ebay-scraper"
+            },
+            headers={
+                "X-Trace-Id": trace_id,
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+                "Access-Control-Allow-Headers": "*"
+            }
+        )
+        
+    except asyncio.TimeoutError:
+        error_msg = f"Scraper timeout ({SCRAPER_TIMEOUT}s)"
+        print(f"[api] {error_msg} (trace: {trace_id})")
+        return JSONResponse(
+            content={
+                "ok": False,
+                "detail": "upstream timeout",
+                "trace": trace_id,
+                "upstream": "external-scraper"
+            },
+            status_code=502,
+            headers={"X-Trace-Id": trace_id}
+        )
+    except Exception as e:
+        error_msg = f"Scraper error: {str(e)}"
+        print(f"[api] {error_msg} (trace: {trace_id})")
+        return JSONResponse(
+            content={
+                "ok": False,
+                "detail": "upstream bad gateway",
+                "trace": trace_id,
+                "upstream": "external-scraper"
+            },
+            status_code=502,
+            headers={"X-Trace-Id": trace_id}
+        )
 
 @app.post("/normalize-test")
 async def normalize_test(request: NormalizeTestRequest, http_request: Request):
