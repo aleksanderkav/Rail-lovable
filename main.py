@@ -3466,7 +3466,7 @@ async def ingest(request: IngestRequest, http_request: Request):
         if not valid_items:
             return JSONResponse(
                 content=response_data,
-                headers={"x-trace-id": trace_id}
+                headers={"X-Trace-Id": trace_id}
             )
         
         if dry_run:
@@ -3474,7 +3474,7 @@ async def ingest(request: IngestRequest, http_request: Request):
             response_data["card_id"] = "dry-run-simulation"
             return JSONResponse(
                 content=response_data,
-                headers={"x-trace-id": trace_id}
+                headers={"X-Trace-Id": trace_id}
             )
         
         # Database operations using service role
@@ -3485,11 +3485,11 @@ async def ingest(request: IngestRequest, http_request: Request):
             return JSONResponse(
                 content={
                     "ok": False,
-                    "error": "Service not configured",
+                    "detail": "Service not configured",
                     "trace": trace_id
                 },
                 status_code=500,
-                headers={"x-trace-id": trace_id}
+                headers={"X-Trace-Id": trace_id}
             )
         
         # Step 1: Upsert card
@@ -3502,18 +3502,18 @@ async def ingest(request: IngestRequest, http_request: Request):
             return JSONResponse(
                 content={
                     "ok": False,
-                    "error": "Failed to create/update card",
+                    "detail": "Failed to create/update card",
                     "trace": trace_id
                 },
                 status_code=500,
-                headers={"x-trace-id": trace_id}
+                headers={"X-Trace-Id": trace_id}
             )
         
         # Step 2: Upsert listings
         listings_created = await upsert_listings(
             supabase_url, service_role_key,
             card_id, valid_items, trace_id
-        )
+            )
         
         print(f"[ingest] DB complete: card_id={card_id}, listings_created={listings_created} (trace: {trace_id})")
         
@@ -3521,7 +3521,7 @@ async def ingest(request: IngestRequest, http_request: Request):
         
         return JSONResponse(
             content=response_data,
-            headers={"x-trace-id": trace_id}
+            headers={"X-Trace-Id": trace_id}
         )
         
     except Exception as e:
@@ -3529,32 +3529,32 @@ async def ingest(request: IngestRequest, http_request: Request):
         return JSONResponse(
             content={
                 "ok": False,
-                "error": str(e),
+                "detail": str(e),
                 "trace": trace_id
             },
             status_code=500,
-            headers={"x-trace-id": trace_id}
+            headers={"X-Trace-Id": trace_id}
         )
 
 @router.options("/ingest", dependencies=[Depends(cors_guard)])
 def ingest_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
-    response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
     return Response(status_code=200)
 
 @router.options("/admin/cards", dependencies=[Depends(cors_guard)])
 def admin_cards_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
-    response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
     return Response(status_code=200)
 
 @router.options("/admin/listings", dependencies=[Depends(cors_guard)])
 def admin_listings_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
-    response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
     return Response(status_code=200)
 
 @router.get("/debug/ingest-sample")
@@ -3591,8 +3591,8 @@ async def debug_admin_token():
     }
 
 @router.get("/admin/cards")
-async def admin_cards(request: Request, search: Optional[str] = None, limit: int = 50):
-    """Admin endpoint to list cards from database"""
+async def admin_cards(request: Request, search: Optional[str] = None, limit: int = 50, id: Optional[str] = None):
+    """Admin endpoint to list cards from database with consistent response shape"""
     trace_id = str(uuid.uuid4())[:8]
     client_ip = request.client.host if request.client else "unknown"
     
@@ -3604,11 +3604,11 @@ async def admin_cards(request: Request, search: Optional[str] = None, limit: int
         return JSONResponse(
             content={
                 "ok": False,
-                "error": "Unauthorized",
+                "detail": "Unauthorized",
                 "trace": trace_id
             },
             status_code=401,
-            headers={"x-trace-id": trace_id}
+            headers={"X-Trace-Id": trace_id}
         )
     
     # Validate limit parameter
@@ -3617,7 +3617,7 @@ async def admin_cards(request: Request, search: Optional[str] = None, limit: int
     elif limit < 1:
         limit = 1
     
-    print(f"[admin] /admin/cards called from {client_ip} search='{search}' limit={limit} (trace: {trace_id})")
+    print(f"[admin] /admin/cards called from {client_ip} search='{search}' limit={limit} id='{id}' (trace: {trace_id})")
     
     try:
         # Call Supabase REST API with service role key
@@ -3628,11 +3628,11 @@ async def admin_cards(request: Request, search: Optional[str] = None, limit: int
             return JSONResponse(
                 content={
                     "ok": False,
-                    "error": "Service not configured",
+                    "detail": "Service not configured",
                     "trace": trace_id
                 },
                 status_code=500,
-                headers={"x-trace-id": trace_id}
+                headers={"X-Trace-Id": trace_id}
             )
         
         # Build Supabase REST API URL
@@ -3643,8 +3643,12 @@ async def admin_cards(request: Request, search: Optional[str] = None, limit: int
             "limit": min(limit, 1000)
         }
         
-        # Add search filter if provided
-        if search:
+        # Add filters
+        if id:
+            # Exact UUID lookup
+            params["id"] = f"eq.{id}"
+        elif search:
+            # Full-text search on query field
             params["query"] = f"ilike.%{search}%"
         
         headers = {
@@ -3667,20 +3671,20 @@ async def admin_cards(request: Request, search: Optional[str] = None, limit: int
                     "count": len(cards),
                     "trace": trace_id
                 },
-                headers={"x-trace-id": trace_id}
+                headers={"X-Trace-Id": trace_id}
             )
         else:
-            # Return empty array with error details
+            # Return error with consistent shape
             sb_request_id = response.headers.get("sb-request-id", "unknown")
             print(f"[admin] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
             return JSONResponse(
                 content={
                     "ok": False,
-                    "error": f"Database error: {response.status_code}",
+                    "detail": f"Database error: {response.status_code}",
                     "trace": trace_id
                 },
                 status_code=500,
-                headers={"x-trace-id": trace_id}
+                headers={"X-Trace-Id": trace_id}
             )
         
     except Exception as e:
@@ -3688,16 +3692,16 @@ async def admin_cards(request: Request, search: Optional[str] = None, limit: int
         return JSONResponse(
             content={
                 "ok": False,
-                "error": str(e),
+                "detail": str(e),
                 "trace": trace_id
             },
             status_code=500,
-            headers={"x-trace-id": trace_id}
+            headers={"X-Trace-Id": trace_id}
         )
 
 @router.get("/admin/listings")
-async def admin_listings(request: Request, card_id: str, limit: int = 100):
-    """Admin endpoint to list listings from database"""
+async def admin_listings(request: Request, card_id: str, limit: int = 200):
+    """Admin endpoint to list listings from database with consistent response shape"""
     trace_id = str(uuid.uuid4())[:8]
     client_ip = request.client.host if request.client else "unknown"
     
@@ -3709,11 +3713,11 @@ async def admin_listings(request: Request, card_id: str, limit: int = 100):
         return JSONResponse(
             content={
                 "ok": False,
-                "error": "Unauthorized",
+                "detail": "Unauthorized",
                 "trace": trace_id
             },
             status_code=401,
-            headers={"x-trace-id": trace_id}
+            headers={"X-Trace-Id": trace_id}
         )
     
     # Validate card_id is provided
@@ -3721,11 +3725,11 @@ async def admin_listings(request: Request, card_id: str, limit: int = 100):
         return JSONResponse(
             content={
                 "ok": False,
-                "error": "card_id is required",
+                "detail": "card_id is required",
                 "trace": trace_id
             },
             status_code=400,
-            headers={"x-trace-id": trace_id}
+            headers={"X-Trace-Id": trace_id}
         )
     
     # Validate limit parameter
@@ -3745,18 +3749,18 @@ async def admin_listings(request: Request, card_id: str, limit: int = 100):
             return JSONResponse(
                 content={
                     "ok": False,
-                    "error": "Service not configured",
+                    "detail": "Service not configured",
                     "trace": trace_id
                 },
                 status_code=500,
-                headers={"x-trace-id": trace_id}
+                headers={"X-Trace-Id": trace_id}
             )
         
-        # Build Supabase REST API URL
+        # Build Supabase REST API URL with specific field selection and ordering
         rest_url = f"{supabase_url}/rest/v1/listings"
         params = {
-            "select": "*",
-            "order": "created_at.desc",
+            "select": "id,card_id,title,url,source_listing_id,price,currency,sold,ended_at,created_at",
+            "order": "ended_at.desc.nulls.last,created_at.desc",
             "limit": min(limit, 1000),
             "card_id": f"eq.{card_id}"
         }
@@ -3781,20 +3785,20 @@ async def admin_listings(request: Request, card_id: str, limit: int = 100):
                     "count": len(listings),
                     "trace": trace_id
                 },
-                headers={"x-trace-id": trace_id}
+                headers={"X-Trace-Id": trace_id}
             )
         else:
-            # Return error details
+            # Return error with consistent shape
             sb_request_id = response.headers.get("sb-request-id", "unknown")
             print(f"[admin] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
             return JSONResponse(
                 content={
                     "ok": False,
-                    "error": f"Database error: {response.status_code}",
+                    "detail": f"Database error: {response.status_code}",
                     "trace": trace_id
-            },
+                },
                 status_code=500,
-                headers={"x-trace-id": trace_id}
+                headers={"X-Trace-Id": trace_id}
             )
         
     except Exception as e:
@@ -3802,23 +3806,305 @@ async def admin_listings(request: Request, card_id: str, limit: int = 100):
         return JSONResponse(
             content={
                 "ok": False,
-                "error": str(e),
+                "detail": str(e),
                 "trace": trace_id
             },
             status_code=500,
-            headers={"x-trace-id": trace_id}
+            headers={"X-Trace-Id": trace_id}
         )
 
-@router.options("/admin/cards", dependencies=[Depends(cors_guard)])
-def admin_cards_options(response: Response):
+@router.get("/admin/diag-db")
+async def admin_diag_db(request: Request):
+    """Admin diagnostic endpoint to test database connectivity"""
+    trace_id = str(uuid.uuid4())[:8]
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Check admin token
+    admin_token = request.headers.get("X-Admin-Token")
+    expected_token = get_admin_proxy_token()
+    
+    if not admin_token or admin_token != expected_token:
+        return JSONResponse(
+            content={
+                "ok": False,
+                "detail": "Unauthorized",
+                "trace": trace_id
+            },
+            status_code=401,
+            headers={"X-Trace-Id": trace_id}
+        )
+    
+    print(f"[admin] /admin/diag-db called from {client_ip} (trace: {trace_id})")
+    
+    try:
+        # Test database connectivity by calling cards and tracked_queries endpoints
+        service_role_key = get_service_role_key()
+        supabase_url = get_supabase_url()
+        
+        if not service_role_key or not supabase_url:
+            return JSONResponse(
+                content={
+                    "ok": False,
+                    "detail": "Service not configured",
+                    "trace": trace_id
+                },
+                status_code=500,
+                headers={"X-Trace-Id": trace_id}
+            )
+        
+        # Test cards endpoint
+        cards_url = f"{supabase_url}/rest/v1/cards"
+        headers = {
+            "Authorization": f"Bearer {service_role_key}",
+            "apikey": service_role_key,
+            "Content-Type": "application/json"
+        }
+        
+        cards_response = await http_client.get(cards_url, headers=headers, params={"select": "id", "limit": 1})
+        
+        # Test tracked_queries endpoint
+        queries_url = f"{supabase_url}/rest/v1/tracked_queries"
+        queries_response = await http_client.get(queries_url, headers=headers, params={"select": "id", "limit": 1})
+        
+        if cards_response.status_code == 200 and queries_response.status_code == 200:
+            print(f"[admin] Database connectivity test passed (trace: {trace_id})")
+            return JSONResponse(
+                content={
+                    "ok": True,
+                    "message": "Database connectivity test passed",
+                    "cards_status": "ok",
+                    "queries_status": "ok",
+                    "trace": trace_id
+                },
+                headers={"X-Trace-Id": trace_id}
+            )
+        else:
+            return JSONResponse(
+                content={
+                    "ok": False,
+                    "detail": f"Database test failed: cards={cards_response.status_code}, queries={queries_response.status_code}",
+                    "trace": trace_id
+                },
+                status_code=500,
+                headers={"X-Trace-Id": trace_id}
+            )
+        
+    except Exception as e:
+        print(f"[admin] /admin/diag-db error: {e} (trace: {trace_id})")
+        return JSONResponse(
+            content={
+                "ok": False,
+                "detail": str(e),
+                "trace": trace_id
+            },
+            status_code=500,
+            headers={"X-Trace-Id": trace_id}
+        )
+
+@router.get("/admin/diag-ef")
+async def admin_diag_ef(request: Request):
+    """Admin diagnostic endpoint to test Edge Function pipeline"""
+    trace_id = str(uuid.uuid4())[:8]
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Check admin token
+    admin_token = request.headers.get("X-Admin-Token")
+    expected_token = get_admin_proxy_token()
+    
+    if not admin_token or admin_token != expected_token:
+        return JSONResponse(
+            content={
+                "ok": False,
+                "detail": "Unauthorized",
+                "trace": trace_id
+            },
+            status_code=401,
+            headers={"X-Trace-Id": trace_id}
+        )
+    
+    print(f"[admin] /admin/diag-ef called from {client_ip} (trace: {trace_id})")
+    
+    try:
+        # Test Edge Function pipeline with a dry-run external fetch
+        service_role_key = get_service_role_key()
+        supabase_url = get_supabase_url()
+        
+        if not service_role_key or not supabase_url:
+            return JSONResponse(
+                content={
+                    "ok": False,
+                    "detail": "Service not configured",
+                    "trace": trace_id
+                },
+                status_code=500,
+                headers={"X-Trace-Id": trace_id}
+            )
+        
+        # Test with a simple health check query
+        test_query = "health-check"
+        test_url = f"{supabase_url}/rest/v1/tracked_queries"
+        headers = {
+            "Authorization": f"Bearer {service_role_key}",
+            "apikey": service_role_key,
+            "Content-Type": "application/json"
+        }
+        
+        # This tests if the Edge Function pipeline is reachable
+        response = await http_client.get(test_url, headers=headers, params={"select": "id", "query": f"eq.{test_query}", "limit": 1})
+        
+        if response.status_code == 200:
+            print(f"[admin] Edge Function pipeline test passed (trace: {trace_id})")
+            return JSONResponse(
+                content={
+                    "ok": True,
+                    "message": "Edge Function pipeline test passed",
+                    "trace": trace_id
+                },
+                headers={"X-Trace-Id": trace_id}
+            )
+        else:
+            return JSONResponse(
+                content={
+                    "ok": False,
+                    "detail": f"Edge Function test failed: {response.status_code}",
+                    "trace": trace_id
+                },
+                status_code=500,
+                headers={"X-Trace-Id": trace_id}
+            )
+        
+    except Exception as e:
+        print(f"[admin] /admin/diag-ef error: {e} (trace: {trace_id})")
+        return JSONResponse(
+            content={
+                "ok": False,
+                "detail": str(e),
+                "trace": trace_id
+            },
+            status_code=500,
+            headers={"X-Trace-Id": trace_id}
+        )
+
+@router.get("/admin/logs")
+async def admin_logs(request: Request, limit: int = 1):
+    """Admin endpoint to view scraping logs"""
+    trace_id = str(uuid.uuid4())[:8]
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Check admin token
+    admin_token = request.headers.get("X-Admin-Token")
+    expected_token = get_admin_proxy_token()
+    
+    if not admin_token or admin_token != expected_token:
+        return JSONResponse(
+            content={
+                "ok": False,
+                "detail": "Unauthorized",
+                "trace": trace_id
+            },
+            status_code=401,
+            headers={"X-Trace-Id": trace_id}
+        )
+    
+    # Validate limit parameter
+    if limit > 1000:
+        limit = 1000
+    elif limit < 1:
+        limit = 1
+    
+    print(f"[admin] /admin/logs called from {client_ip} limit={limit} (trace: {trace_id})")
+    
+    try:
+        # Call Supabase REST API with service role key
+        service_role_key = get_service_role_key()
+        supabase_url = get_supabase_url()
+        
+        if not service_role_key or not supabase_url:
+            return JSONResponse(
+                content={
+                    "ok": False,
+                    "detail": "Service not configured",
+                    "trace": trace_id
+                },
+                status_code=500,
+                headers={"X-Trace-Id": trace_id}
+            )
+        
+        # Build Supabase REST API URL
+        rest_url = f"{supabase_url}/rest/v1/scraping_logs"
+        params = {
+            "select": "*",
+            "order": "created_at.desc",
+            "limit": min(limit, 1000)
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {service_role_key}",
+            "apikey": service_role_key,
+            "Content-Type": "application/json"
+        }
+        
+        print(f"[admin] Calling Supabase REST: {rest_url} (trace: {trace_id})")
+        
+        response = await http_client.get(rest_url, headers=headers, params=params)
+        
+        if response.status_code == 200:
+            logs = response.json()
+            print(f"[admin] Retrieved {len(logs)} logs (trace: {trace_id})")
+            return JSONResponse(
+                content={
+                    "ok": True,
+                    "items": logs,
+                    "count": len(logs),
+                    "trace": trace_id
+                },
+                headers={"X-Trace-Id": trace_id}
+            )
+        else:
+            # Return error with consistent shape
+            sb_request_id = response.headers.get("sb-request-id", "unknown")
+            print(f"[admin] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
+            return JSONResponse(
+                content={
+                    "ok": False,
+                    "detail": f"Database error: {response.status_code}",
+                    "trace": trace_id
+                },
+                status_code=500,
+                headers={"X-Trace-Id": trace_id}
+            )
+        
+    except Exception as e:
+        print(f"[admin] /admin/logs error: {e} (trace: {trace_id})")
+        return JSONResponse(
+            content={
+                "ok": False,
+                "detail": str(e),
+                "trace": trace_id
+            },
+            status_code=500,
+            headers={"X-Trace-Id": trace_id}
+        )
+
+@router.options("/admin/diag-db", dependencies=[Depends(cors_guard)])
+def admin_diag_db_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
     return Response(status_code=200)
 
-@router.options("/admin/listings", dependencies=[Depends(cors_guard)])
-def admin_listings_options(response: Response):
+@router.options("/admin/diag-ef", dependencies=[Depends(cors_guard)])
+def admin_diag_ef_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    return Response(status_code=200)
+
+@router.options("/admin/logs", dependencies=[Depends(cors_guard)])
+def admin_logs_options(response: Response):
+    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
     return Response(status_code=200)
 
 # Helper functions for database operations
