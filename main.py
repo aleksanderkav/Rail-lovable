@@ -3239,9 +3239,14 @@ def admin_wildcard_options(rest_of_path: str, response: Response):
 
 @router.post("/ingest")
 async def ingest(request: IngestRequest, http_request: Request):
-    """Ingest items into the database with upsert logic"""
+    """Ingest items into the database with upsert logic - hardened for Instant drawer compatibility"""
     trace_id = str(uuid.uuid4())[:8]
     client_ip = http_request.client.host if http_request.client else "unknown"
+    
+    # Log request details
+    content_type = http_request.headers.get("content-type", "unknown")
+    body_length = len(str(request.dict())) if request else 0
+    print(f"[ingest] REQUEST: query='{request.query}' marketplace='{request.marketplace}' items={len(request.items)} content-type={content_type} body-length={body_length} (trace: {trace_id})")
     
     # Validate admin token
     admin_token = http_request.headers.get("X-Admin-Token")
@@ -3249,72 +3254,168 @@ async def ingest(request: IngestRequest, http_request: Request):
     
     if not admin_token or admin_token != expected_token:
         return JSONResponse(
-            content=ErrorResponse(
-                error="Unauthorized",
-                trace_id=trace_id
-            ).dict(),
+            content={
+                "ok": False,
+                "error": "Unauthorized",
+                "trace": trace_id
+            },
             status_code=401,
             headers={"x-trace-id": trace_id}
         )
-    
-    print(f"[api] /ingest request from {client_ip} query='{request.query}' marketplace='{request.marketplace}' items={len(request.items)} (trace: {trace_id})")
     
     # Check if this is a dry run
     dry_run = http_request.query_params.get("dryRun", "").lower() in ["1", "true", "t", "yes", "on"]
     
     if dry_run:
-        print(f"[api] DRY RUN mode - simulating ingestion (trace: {trace_id})")
+        print(f"[ingest] DRY RUN mode - simulating ingestion (trace: {trace_id})")
     
     try:
-        # Validate items - reject items without url or source_listing_id
+        # Harden payload parsing with flexible field mapping
         valid_items = []
-        skipped_items = []
+        skip_counters = {"no_url": 0, "no_id": 0, "dup": 0}
+        seen_ids = set()
         
-        for item in request.items:
-            if not item.get("url") or not item.get("source_listing_id"):
-                skipped_items.append({
-                    "reason": "missing_url_or_id",
-                    "item": item
-                })
+        for i, item in enumerate(request.items):
+            # Flexible field mapping for title
+            title = item.get('title') or item.get('name') or ''
+            
+            # Flexible field mapping for URL
+            url = None
+            url_sources = ['url', 'debug_url', 'href', 'link', 'permalink']
+            for url_key in url_sources:
+                if item.get(url_key):
+                    url = item.get(url_key)
+                    if i < 3:  # Log first 3 items
+                        print(f"[ingest] pick url={url_key}, id=... (trace: {trace_id})")
+                    break
+            
+            # Flexible field mapping for source_listing_id
+            source_listing_id = None
+            id_sources = ['source_listing_id', 'listing_id', 'id', 'itemId', 'ebay_id']
+            for id_key in id_sources:
+                if item.get(id_key):
+                    source_listing_id = str(item.get(id_key))
+                    if i < 3:  # Log first 3 items
+                        print(f"[ingest] pick url={url_sources[0] if url else 'none'}, id={id_key} (trace: {trace_id})")
+                    break
+            
+            # Derive source_listing_id from URL if still empty
+            if not source_listing_id and url:
+                import re
+                # Try /itm/<digits>
+                match = re.search(r'/itm/(\d{6,})', url)
+                if not match:
+                    # Try query param itm=<digits>
+                    match = re.search(r'[?&]itm=(\d{6,})', url)
+                if not match:
+                    # Try /p/<digits>
+                    match = re.search(r'/p/(\d{6,})', url)
+                
+                if match:
+                    source_listing_id = match.group(1)
+                    if i < 3:  # Log first 3 items
+                        print(f"[ingest] derived id from url: {source_listing_id} (trace: {trace_id})")
+            
+            # Check for required fields
+            if not url:
+                skip_counters["no_url"] += 1
                 continue
             
-            # Normalize URL using existing helper
-            normalized_url = canonicalize_ebay_url(item["url"])
+            if not source_listing_id:
+                skip_counters["no_id"] += 1
+                continue
+            
+            # Check for duplicates
+            if source_listing_id in seen_ids:
+                skip_counters["dup"] += 1
+                continue
+            
+            seen_ids.add(source_listing_id)
+            
+            # Parse price and currency
+            price = None
+            price_raw = item.get('price') or item.get('amount')
+            if price_raw:
+                try:
+                    # Remove currency symbols and parse
+                    price_str = str(price_raw).strip()
+                    # Remove common currency symbols
+                    for symbol in ['$', '£', '€', '¥', 'kr', '₹', '₽']:
+                        price_str = price_str.replace(symbol, '')
+                    price = float(price_str)
+                except (ValueError, TypeError):
+                    pass
+            
+            # Parse currency
+            currency = "USD"  # default
+            currency_raw = item.get('currency')
+            if currency_raw:
+                currency = str(currency_raw).upper()
+            elif price_raw:
+                # Detect from price string
+                price_str = str(price_raw).upper()
+                if '$' in price_str:
+                    currency = "USD"
+                elif '£' in price_str:
+                    currency = "GBP"
+                elif '€' in price_str:
+                    currency = "EUR"
+                elif '¥' in price_str:
+                    currency = "JPY"
+                elif 'kr' in price_str:
+                    currency = "NOK"
+            
+            # Parse sold status
+            sold = bool(item.get('sold') or item.get('is_sold'))
+            
+            # Parse ended_at
+            ended_at = item.get('ended_at') or item.get('endTime') or None
+            
+            # Canonicalize URL if it looks like eBay
+            if url and ('ebay.com' in url or 'ebay.' in url):
+                url = canonicalize_ebay_url(url)
             
             # Create validated item
             valid_item = {
-                "title": item.get("title", ""),
-                "url": normalized_url,
-                "source_listing_id": item["source_listing_id"],
-                "price": item.get("price"),
-                "currency": item.get("currency", "USD"),
-                "sold": item.get("sold", False),
-                "ended_at": item.get("ended_at")
+                "title": title,
+                "url": url,
+                "source_listing_id": source_listing_id,
+                "price": price,
+                "currency": currency,
+                "sold": sold,
+                "ended_at": ended_at
             }
             valid_items.append(valid_item)
         
-        print(f"[api] Validation complete: {len(valid_items)} valid, {len(skipped_items)} skipped (trace: {trace_id})")
+        # Log first accepted item sample
+        if valid_items:
+            first_item = valid_items[0]
+            print(f"[ingest] first accepted item: title='{first_item['title'][:50]}...' url={first_item['url'][:50]}... id={first_item['source_listing_id']} (trace: {trace_id})")
+        
+        # Log completion summary
+        print(f"[ingest] COMPLETE: accepted={len(valid_items)}, skipped={skip_counters}, total={len(request.items)} (trace: {trace_id})")
+        
+        # Always return 200 JSON with consistent format
+        response_data = {
+            "ok": True,
+            "card_id": None,
+            "accepted": len(valid_items),
+            "skipped": skip_counters,
+            "total": len(request.items),
+            "trace": trace_id
+        }
         
         if not valid_items:
             return JSONResponse(
-                content=IngestResponse(
-                    status="success",
-                    card_id=None,
-                    inserted=0,
-                    trace_id=trace_id
-                ).dict(),
+                content=response_data,
                 headers={"x-trace-id": trace_id}
             )
         
         if dry_run:
             # Return summary without database operations
+            response_data["card_id"] = "dry-run-simulation"
             return JSONResponse(
-                content=IngestResponse(
-                    status="success",
-                    card_id="dry-run-simulation",
-                    inserted=len(valid_items),
-                    trace_id=trace_id
-                ).dict(),
+                content=response_data,
                 headers={"x-trace-id": trace_id}
             )
         
@@ -3324,10 +3425,11 @@ async def ingest(request: IngestRequest, http_request: Request):
         
         if not service_role_key or not supabase_url:
             return JSONResponse(
-                content=ErrorResponse(
-                    error="Service not configured",
-                    trace_id=trace_id
-                ).dict(),
+                content={
+                    "ok": False,
+                    "error": "Service not configured",
+                    "trace": trace_id
+                },
                 status_code=500,
                 headers={"x-trace-id": trace_id}
             )
@@ -3340,10 +3442,11 @@ async def ingest(request: IngestRequest, http_request: Request):
         
         if not card_id:
             return JSONResponse(
-                content=ErrorResponse(
-                    error="Failed to create/update card",
-                    trace_id=trace_id
-                ).dict(),
+                content={
+                    "ok": False,
+                    "error": "Failed to create/update card",
+                    "trace": trace_id
+                },
                 status_code=500,
                 headers={"x-trace-id": trace_id}
             )
@@ -3354,25 +3457,23 @@ async def ingest(request: IngestRequest, http_request: Request):
             card_id, valid_items, trace_id
         )
         
-        print(f"[api] Ingestion complete: card_id={card_id}, listings_created={listings_created} (trace: {trace_id})")
+        print(f"[ingest] DB complete: card_id={card_id}, listings_created={listings_created} (trace: {trace_id})")
+        
+        response_data["card_id"] = card_id
         
         return JSONResponse(
-            content=IngestResponse(
-                status="success",
-                card_id=card_id,
-                inserted=listings_created,
-                trace_id=trace_id
-            ).dict(),
+            content=response_data,
             headers={"x-trace-id": trace_id}
         )
         
     except Exception as e:
-        print(f"[api] /ingest error: {e} (trace: {trace_id})")
+        print(f"[ingest] ERROR: {e} (trace: {trace_id})")
         return JSONResponse(
-            content=ErrorResponse(
-                error=str(e),
-                trace_id=trace_id
-            ).dict(),
+            content={
+                "ok": False,
+                "error": str(e),
+                "trace": trace_id
+            },
             status_code=500,
             headers={"x-trace-id": trace_id}
         )
@@ -3380,8 +3481,42 @@ async def ingest(request: IngestRequest, http_request: Request):
 @router.options("/ingest", dependencies=[Depends(cors_guard)])
 def ingest_options(response: Response):
     response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
     return Response(status_code=200)
+
+@router.options("/admin/cards", dependencies=[Depends(cors_guard)])
+def admin_cards_options(response: Response):
+    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
+    return Response(status_code=200)
+
+@router.options("/admin/listings", dependencies=[Depends(cors_guard)])
+def admin_listings_options(response: Response):
+    response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "x-trace-id"
+    return Response(status_code=200)
+
+@router.get("/debug/ingest-sample")
+async def debug_ingest_sample():
+    """Return a minimal valid item example for testing"""
+    return {
+        "ok": True,
+        "sample": {
+            "query": "Charizard Base Set Unlimited PSA 9",
+            "marketplace": "ebay",
+            "items": [
+                {
+                    "title": "Charizard Base Set Unlimited PSA 9 - Pokemon Card",
+                    "debug_url": "https://www.ebay.com/itm/306444665735",
+                    "price": "450.00 USD",
+                    "sold": False
+                }
+            ]
+        }
+    }
 
 @router.get("/admin/cards")
 async def admin_cards(request: Request, search: Optional[str] = None, limit: int = 50):
@@ -3395,10 +3530,11 @@ async def admin_cards(request: Request, search: Optional[str] = None, limit: int
     
     if not admin_token or admin_token != expected_token:
         return JSONResponse(
-            content=ErrorResponse(
-                error="Unauthorized",
-                trace_id=trace_id
-            ).dict(),
+            content={
+                "ok": False,
+                "error": "Unauthorized",
+                "trace": trace_id
+            },
             status_code=401,
             headers={"x-trace-id": trace_id}
         )
@@ -3409,7 +3545,7 @@ async def admin_cards(request: Request, search: Optional[str] = None, limit: int
     elif limit < 1:
         limit = 1
     
-    print(f"[api] /admin/cards called from {client_ip} search='{search}' limit={limit} (trace: {trace_id})")
+    print(f"[admin] /admin/cards called from {client_ip} search='{search}' limit={limit} (trace: {trace_id})")
     
     try:
         # Call Supabase REST API with service role key
@@ -3418,10 +3554,11 @@ async def admin_cards(request: Request, search: Optional[str] = None, limit: int
         
         if not service_role_key or not supabase_url:
             return JSONResponse(
-                content=ErrorResponse(
-                    error="Service not configured",
-                    trace_id=trace_id
-                ).dict(),
+                content={
+                    "ok": False,
+                    "error": "Service not configured",
+                    "trace": trace_id
+                },
                 status_code=500,
                 headers={"x-trace-id": trace_id}
             )
@@ -3444,41 +3581,44 @@ async def admin_cards(request: Request, search: Optional[str] = None, limit: int
             "Content-Type": "application/json"
         }
         
-        print(f"[api] Calling Supabase REST: {rest_url} (trace: {trace_id})")
+        print(f"[admin] Calling Supabase REST: {rest_url} (trace: {trace_id})")
         
         response = await http_client.get(rest_url, headers=headers, params=params)
         
         if response.status_code == 200:
             cards = response.json()
-            print(f"[api] Retrieved {len(cards)} cards (trace: {trace_id})")
+            print(f"[admin] Retrieved {len(cards)} cards (trace: {trace_id})")
             return JSONResponse(
-                content=AdminCardsResponse(
-                    cards=cards,
-                    count=len(cards),
-                    trace_id=trace_id
-                ).dict(),
+                content={
+                    "ok": True,
+                    "items": cards,
+                    "count": len(cards),
+                    "trace": trace_id
+                },
                 headers={"x-trace-id": trace_id}
             )
         else:
             # Return empty array with error details
             sb_request_id = response.headers.get("sb-request-id", "unknown")
-            print(f"[api] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
+            print(f"[admin] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
             return JSONResponse(
-                content=ErrorResponse(
-                    error=f"Database error: {response.status_code}",
-                    trace_id=trace_id
-                ).dict(),
+                content={
+                    "ok": False,
+                    "error": f"Database error: {response.status_code}",
+                    "trace": trace_id
+                },
                 status_code=500,
                 headers={"x-trace-id": trace_id}
             )
         
     except Exception as e:
-        print(f"[api] /admin/cards error: {e} (trace: {trace_id})")
+        print(f"[admin] /admin/cards error: {e} (trace: {trace_id})")
         return JSONResponse(
-            content=ErrorResponse(
-                error=str(e),
-                trace_id=trace_id
-            ).dict(),
+            content={
+                "ok": False,
+                "error": str(e),
+                "trace": trace_id
+            },
             status_code=500,
             headers={"x-trace-id": trace_id}
         )
@@ -3495,10 +3635,11 @@ async def admin_listings(request: Request, card_id: str, limit: int = 100):
     
     if not admin_token or admin_token != expected_token:
         return JSONResponse(
-            content=ErrorResponse(
-                error="Unauthorized",
-                trace_id=trace_id
-            ).dict(),
+            content={
+                "ok": False,
+                "error": "Unauthorized",
+                "trace": trace_id
+            },
             status_code=401,
             headers={"x-trace-id": trace_id}
         )
@@ -3506,10 +3647,11 @@ async def admin_listings(request: Request, card_id: str, limit: int = 100):
     # Validate card_id is provided
     if not card_id:
         return JSONResponse(
-            content=ErrorResponse(
-                error="card_id is required",
-                trace_id=trace_id
-            ).dict(),
+            content={
+                "ok": False,
+                "error": "card_id is required",
+                "trace": trace_id
+            },
             status_code=400,
             headers={"x-trace-id": trace_id}
         )
@@ -3520,7 +3662,7 @@ async def admin_listings(request: Request, card_id: str, limit: int = 100):
     elif limit < 1:
         limit = 1
     
-    print(f"[api] /admin/listings called from {client_ip} card_id={card_id} limit={limit} (trace: {trace_id})")
+    print(f"[admin] /admin/listings called from {client_ip} card_id={card_id} limit={limit} (trace: {trace_id})")
     
     try:
         # Call Supabase REST API with service role key
@@ -3529,10 +3671,11 @@ async def admin_listings(request: Request, card_id: str, limit: int = 100):
         
         if not service_role_key or not supabase_url:
             return JSONResponse(
-                content=ErrorResponse(
-                    error="Service not configured",
-                    trace_id=trace_id
-                ).dict(),
+                content={
+                    "ok": False,
+                    "error": "Service not configured",
+                    "trace": trace_id
+                },
                 status_code=500,
                 headers={"x-trace-id": trace_id}
             )
@@ -3552,41 +3695,44 @@ async def admin_listings(request: Request, card_id: str, limit: int = 100):
             "Content-Type": "application/json"
         }
         
-        print(f"[api] Calling Supabase REST: {rest_url} (trace: {trace_id})")
+        print(f"[admin] Calling Supabase REST: {rest_url} (trace: {trace_id})")
         
         response = await http_client.get(rest_url, headers=headers, params=params)
         
         if response.status_code == 200:
             listings = response.json()
-            print(f"[api] Retrieved {len(listings)} listings (trace: {trace_id})")
+            print(f"[admin] Retrieved {len(listings)} listings (trace: {trace_id})")
             return JSONResponse(
-                content=AdminListingsResponse(
-                    listings=listings,
-                    count=len(listings),
-                    trace_id=trace_id
-                ).dict(),
+                content={
+                    "ok": True,
+                    "items": listings,
+                    "count": len(listings),
+                    "trace": trace_id
+                },
                 headers={"x-trace-id": trace_id}
             )
         else:
             # Return error details
             sb_request_id = response.headers.get("sb-request-id", "unknown")
-            print(f"[api] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
+            print(f"[admin] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
             return JSONResponse(
-                content=ErrorResponse(
-                    error=f"Database error: {response.status_code}",
-                    trace_id=trace_id
-                ).dict(),
+                content={
+                    "ok": False,
+                    "error": f"Database error: {response.status_code}",
+                    "trace": trace_id
+                },
                 status_code=500,
                 headers={"x-trace-id": trace_id}
             )
         
     except Exception as e:
-        print(f"[api] /admin/listings error: {e} (trace: {trace_id})")
+        print(f"[admin] /admin/listings error: {e} (trace: {trace_id})")
         return JSONResponse(
-            content=ErrorResponse(
-                error=str(e),
-                trace_id=trace_id
-            ).dict(),
+            content={
+                "ok": False,
+                "error": str(e),
+                "trace": trace_id
+            },
             status_code=500,
             headers={"x-trace-id": trace_id}
         )
