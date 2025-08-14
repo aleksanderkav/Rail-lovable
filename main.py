@@ -3244,9 +3244,7 @@ async def ingest(request: IngestRequest, http_request: Request):
     client_ip = http_request.client.host if http_request.client else "unknown"
     
     # Log request details
-    content_type = http_request.headers.get("content-type", "unknown")
-    body_length = len(str(request.dict())) if request else 0
-    print(f"[ingest] REQUEST: query='{request.query}' marketplace='{request.marketplace}' items={len(request.items)} content-type={content_type} body-length={body_length} (trace: {trace_id})")
+    print(f"[api] /ingest request from {client_ip} query='{request.query}' marketplace='{request.marketplace}' items={len(request.items)} (trace: {trace_id})")
     
     # Validate admin token
     admin_token = http_request.headers.get("X-Admin-Token")
@@ -3270,50 +3268,57 @@ async def ingest(request: IngestRequest, http_request: Request):
         print(f"[ingest] DRY RUN mode - simulating ingestion (trace: {trace_id})")
     
     try:
-        # Harden payload parsing with flexible field mapping
+        # Input normalization with fallbacks
         valid_items = []
         skip_counters = {"no_url": 0, "no_id": 0, "dup": 0}
         seen_ids = set()
         
         for i, item in enumerate(request.items):
-            # Flexible field mapping for title
+            # Normalize title with fallbacks
             title = item.get('title') or item.get('name') or ''
             
-            # Flexible field mapping for URL
+            # Normalize URL with fallbacks
             url = None
             url_sources = ['url', 'debug_url', 'href', 'link', 'permalink']
             for url_key in url_sources:
                 if item.get(url_key):
                     url = item.get(url_key)
                     if i < 3:  # Log first 3 items
-                        print(f"[ingest] pick url={url_key}, id=... (trace: {trace_id})")
+                        print(f"[ingest] item#{i+1} using url={url_key}")
                     break
             
-            # Flexible field mapping for source_listing_id
+            # Normalize source_listing_id with fallbacks
             source_listing_id = None
             id_sources = ['source_listing_id', 'listing_id', 'id', 'itemId', 'ebay_id']
             for id_key in id_sources:
                 if item.get(id_key):
                     source_listing_id = str(item.get(id_key))
                     if i < 3:  # Log first 3 items
-                        print(f"[ingest] pick url={url_sources[0] if url else 'none'}, id={id_key} (trace: {trace_id})")
+                        print(f"[ingest] item#{i+1} using id={id_key}")
                     break
             
             # Derive source_listing_id from URL if still empty
             if not source_listing_id and url:
                 # Try /itm/<digits>
                 match = re.search(r'/itm/(\d{6,})', url)
-                if not match:
-                    # Try query param itm=<digits>
-                    match = re.search(r'[?&]itm=(\d{6,})', url)
-                if not match:
-                    # Try /p/<digits>
-                    match = re.search(r'/p/(\d{6,})', url)
-                
                 if match:
                     source_listing_id = match.group(1)
                     if i < 3:  # Log first 3 items
-                        print(f"[ingest] derived id from url: {source_listing_id} (trace: {trace_id})")
+                        print(f"[ingest] item#{i+1} derived id:/itm/ {source_listing_id}")
+                else:
+                    # Try query param itm=<digits>
+                    match = re.search(r'[?&]itm=(\d{6,})', url)
+                    if match:
+                        source_listing_id = match.group(1)
+                        if i < 3:  # Log first 3 items
+                            print(f"[ingest] item#{i+1} derived id:?itm= {source_listing_id}")
+                    else:
+                        # Try /p/<digits>
+                        match = re.search(r'/p/(\d{6,})', url)
+                        if match:
+                            source_listing_id = match.group(1)
+                            if i < 3:  # Log first 3 items
+                                print(f"[ingest] item#{i+1} derived id:/p/ {source_listing_id}")
             
             # Check for required fields
             if not url:
@@ -3345,7 +3350,7 @@ async def ingest(request: IngestRequest, http_request: Request):
                 except (ValueError, TypeError):
                     pass
             
-            # Parse currency
+            # Parse currency with fallbacks
             currency = "USD"  # default
             currency_raw = item.get('currency')
             if currency_raw:
@@ -3361,7 +3366,7 @@ async def ingest(request: IngestRequest, http_request: Request):
                     currency = "EUR"
                 elif '¥' in price_str:
                     currency = "JPY"
-                elif 'kr' in price_str:
+                elif 'kr' in price_str or 'NOK' in price_str:
                     currency = "NOK"
             
             # Parse sold status
@@ -3386,13 +3391,8 @@ async def ingest(request: IngestRequest, http_request: Request):
             }
             valid_items.append(valid_item)
         
-        # Log first accepted item sample
-        if valid_items:
-            first_item = valid_items[0]
-            print(f"[ingest] first accepted item: title='{first_item['title'][:50]}...' url={first_item['url'][:50]}... id={first_item['source_listing_id']} (trace: {trace_id})")
-        
         # Log completion summary
-        print(f"[ingest] COMPLETE: accepted={len(valid_items)}, skipped={skip_counters}, total={len(request.items)} (trace: {trace_id})")
+        print(f"[api] /ingest accepted={len(valid_items)} skipped={skip_counters} (trace: {trace_id})")
         
         # Always return 200 JSON with consistent format
         response_data = {
@@ -3733,7 +3733,7 @@ async def admin_listings(request: Request, card_id: str, limit: int = 100):
                     "ok": False,
                     "error": f"Database error: {response.status_code}",
                     "trace": trace_id
-                },
+            },
                 status_code=500,
                 headers={"x-trace-id": trace_id}
             )
