@@ -4012,6 +4012,11 @@ async def options_catch_all():
     from fastapi import Response
     return Response(status_code=200)
 
+# Simple test endpoint to verify app is working
+@app.get("/test")
+async def test_endpoint():
+    return {"ok": True, "message": "App is working"}
+
 # Include the router with all the main endpoints
 app.include_router(router)
 
