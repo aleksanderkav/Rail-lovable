@@ -399,7 +399,7 @@ def _origin_allowed(origin: str) -> bool:
     
     return any(origin.endswith(w) for w in wildcards)
 
-def corsify(response: Response, request: Request) -> Response:
+def corsify(response: JSONResponse, request: Request) -> JSONResponse:
     """Add CORS headers to any response if origin is allowed"""
     origin = request.headers.get("origin", "")
     if _origin_allowed(origin):
@@ -408,13 +408,13 @@ def corsify(response: Response, request: Request) -> Response:
         response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
     return response
 
-def create_success_response(payload: dict, trace: str, request: Request, status_code: int = 200) -> Response:
+def create_success_response(payload: dict, trace: str, request: Request, status_code: int = 200) -> JSONResponse:
     """Create success response with CORS headers"""
     resp = JSONResponse({"ok": True, "trace": trace, **payload}, status_code=status_code)
     resp.headers["X-Trace-Id"] = trace
     return corsify(resp, request)
 
-def create_error_response(detail: str, status_code: int, trace: str, request: Request, extra: dict | None = None) -> Response:
+def create_error_response(detail: str, status_code: int, trace: str, request: Request, extra: dict | None = None) -> JSONResponse:
     """Create error response with CORS headers"""
     body = {"ok": False, "detail": detail, "trace": trace}
     if extra:
