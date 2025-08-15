@@ -3758,24 +3758,7 @@ def ingest_items_options(request: Request, response: Response):
         print(f"[api] CORS denied for OPTIONS /ingest-items: origin={origin} (trace: {trace_id})")
         return Response(status_code=400)
 
-@router.options("/admin/{rest_of_path:path}")
-def admin_wildcard_options(rest_of_path: str, request: Request, response: Response):
-    """OPTIONS handler for admin wildcard endpoint"""
-    trace_id = generate_trace_id()
-    response.headers["X-Trace-Id"] = trace_id
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
-    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    response.headers["Vary"] = "Origin"
-    
-    # Check if origin is allowed before setting CORS headers
-    origin = request.headers.get("origin")
-    if origin and _is_allowed_origin(origin):
-        response.headers["Access-Control-Allow-Origin"] = origin
-        return Response(status_code=200)
-    else:
-        print(f"[api] CORS denied for OPTIONS /admin/{rest_of_path}: origin={origin} (trace: {trace_id})")
-        return Response(status_code=400)
+# Wildcard OPTIONS handler removed - specific handlers handle all admin endpoints
 
 @router.post("/ingest")
 async def ingest(request: IngestRequest, http_request: Request):
