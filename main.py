@@ -4764,9 +4764,19 @@ async def debug_scrape_ebay(q: str, request: Request):
 
 # Catch-all OPTIONS handler for any unmatched paths
 @app.options("/{path:path}")
-async def options_catch_all():
-    from fastapi import Response
-    return Response(status_code=200)
+async def options_catch_all(path: str, request: Request):
+    """Catch-all OPTIONS handler for any unmatched paths"""
+    trace_id = generate_trace_id()
+    response = Response(status_code=200)
+    response.headers["X-Trace-Id"] = trace_id
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+    return response
 
 # Simple test endpoint to verify app is working
 @app.get("/test")
