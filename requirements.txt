@@ -1,7 +1,8 @@
+# Railway-compatible Python dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 httpx==0.25.2
 python-multipart==0.0.6
 selectolax==0.3.33
 beautifulsoup4==4.12.2
-# Force rebuild 
+# Force Railway rebuild - clear cache issues 

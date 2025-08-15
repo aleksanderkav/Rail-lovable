@@ -33,9 +33,13 @@ req() {
 # extract header (case-insensitive)
 get_header() {
   local file="$1" key="$2"
-  awk -v IGNORECASE=1 -v k="$key:" '
-    tolower($0) ~ tolower("^"k) {sub("\r$",""); sub("^[^:]*:[[:space:]]*",""); print; exit}
-  ' "$file"
+  if [[ -f "$file" ]]; then
+    awk -v IGNORECASE=1 -v k="$key:" '
+      tolower($0) ~ tolower("^"k) {sub("\r$",""); sub("^[^:]*:[[:space:]]*",""); print; exit}
+    ' "$file" 2>/dev/null || echo ""
+  else
+    echo ""
+  fi
 }
 
 # Expect helpers
@@ -46,46 +50,66 @@ expect_status() { # url code hdrfile bodyfile expected
     return 0
   else
     fail "Expected $expected but got [$code] for $url"
-    note "Headers:"; sed 's/^/  /' "$hdr" | head -n 50
-    note "Body:";    sed 's/^/  /' "$body" | head -n 200
+    if [[ -f "$hdr" ]]; then
+      note "Headers:"; head -n 50 "$hdr" | sed 's/^/  /' 2>/dev/null || true
+    fi
+    if [[ -f "$body" ]]; then
+      note "Body:"; head -n 200 "$body" | sed 's/^/  /' 2>/dev/null || true
+    fi
     return 1
   fi
 }
 
 expect_ok_true() { # bodyfile
   local body="$1"
-  if [[ $HAVE_JQ -eq 1 ]]; then
-    if jq -e '.ok == true' "$body" >/dev/null 2>&1; then
-      pass "ok=true"
-      return 0
+  if [[ -f "$body" ]]; then
+    if [[ $HAVE_JQ -eq 1 ]]; then
+      if jq -e '.ok == true' "$body" >/dev/null 2>&1; then
+        pass "ok=true"
+        return 0
+      fi
+    else
+      if grep -q '"ok":true' "$body" 2>/dev/null; then
+        pass "ok=true (grep)"
+        return 0
+      fi
     fi
-  else
-    grep -q '"ok":true' "$body" && { pass "ok=true (grep)"; return 0; }
   fi
   fail "ok != true"
-  sed 's/^/  /' "$body" | head -n 100
+  if [[ -f "$body" ]]; then
+    head -n 100 "$body" | sed 's/^/  /' 2>/dev/null || true
+  fi
   return 1
 }
 
 expect_json_field() { # bodyfile jq_filter description
   local body="$1" filter="$2" desc="$3"
-  if [[ $HAVE_JQ -eq 1 ]]; then
-    if jq -e "$filter" "$body" >/dev/null 2>&1; then
-      pass "$desc"
+  if [[ -f "$body" ]]; then
+    if [[ $HAVE_JQ -eq 1 ]]; then
+      if jq -e "$filter" "$body" >/dev/null 2>&1; then
+        pass "$desc"
+        return 0
+      fi
+    fi
+    # fallback: best-effort grep
+    if grep -q '"items":' "$body" 2>/dev/null; then
+      pass "$desc (grep)"
       return 0
     fi
   fi
-  # fallback: best-effort grep
-  grep -q '"items":' "$body" && { pass "$desc (grep)"; return 0; }
   fail "$desc missing"
-  sed 's/^/  /' "$body" | head -n 100
+  if [[ -f "$body" ]]; then
+    head -n 100 "$body" | sed 's/^/  /' 2>/dev/null || true
+  fi
   return 1
 }
 
 print_trace() { # hdrfile
   local hdr="$1"
-  local tr; tr="$(get_header "$hdr" "X-Trace-Id")"
-  [[ -n "$tr" ]] && note "Trace: $tr"
+  if [[ -f "$hdr" ]]; then
+    local tr; tr="$(get_header "$hdr" "X-Trace-Id")"
+    [[ -n "$tr" ]] && note "Trace: $tr"
+  fi
 }
 
 # ----------------- Tests -----------------
@@ -101,9 +125,17 @@ for path in /scrape-now /scrape-now-fast /ingest; do
   IFS="|" read -r D C H B <<<"$R"
   expect_status "$BASE$path [OPTIONS]" "$C" "$H" "$B" 200 || true
   ACO="$(get_header "$H" "Access-Control-Allow-Origin")"
-  if [[ "$ACO" == "$ORIGIN" ]]; then pass "Allow-Origin echoed: $ACO"; else fail "Wrong/missing Allow-Origin (got: $ACO)"; fi
+  if [[ "$ACO" == "$ORIGIN" ]]; then 
+    pass "Allow-Origin echoed: $ACO"
+  else 
+    fail "Wrong/missing Allow-Origin (got: $ACO)"
+  fi
   ACE="$(get_header "$H" "Access-Control-Expose-Headers")"
-  echo "$ACE" | grep -qi "x-trace-id" && pass "Expose X-Trace-Id" || fail "Missing expose X-Trace-Id"
+  if echo "$ACE" | grep -qi "x-trace-id"; then
+    pass "Expose X-Trace-Id"
+  else
+    fail "Missing expose X-Trace-Id"
+  fi
 done
 
 title "2) Instant scrape (dryRun)"
@@ -171,3 +203,10 @@ echo
 line
 echo "✅ Test run complete. Review any ❌ above. Keep X-Trace-Id for debugging in /admin/logs?trace=<id>."
 line
+
+# Cleanup temp files
+for dir in "$D0" "$D1" "$D2" "$D3" "$D4" "$D5" "$D6" "$D7" "$D8"; do
+  if [[ -d "$dir" ]]; then
+    rm -rf "$dir" 2>/dev/null || true
+  fi
+done
