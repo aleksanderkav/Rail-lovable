@@ -1354,10 +1354,17 @@ async def smoketest():
         )
 
 @router.options("/scrape-now")
-def scrape_now_options(response: Response):
+def scrape_now_options(request: Request, response: Response):
+    """OPTIONS handler for scrape-now endpoint"""
+    trace_id = generate_trace_id()
+    response.headers["X-Trace-Id"] = trace_id
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     return Response(status_code=200)
 
 @router.get("/scrape-now")
@@ -1374,17 +1381,31 @@ async def scrape_now_get():
     )
 
 @router.options("/scrape-now/")
-def scrape_now_trailing_options(response: Response):
+def scrape_now_trailing_options(request: Request, response: Response):
+    """OPTIONS handler for scrape-now trailing slash endpoint"""
+    trace_id = generate_trace_id()
+    response.headers["X-Trace-Id"] = trace_id
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     return Response(status_code=200)
 
 @router.options("/scrape-now-fast")
-def scrape_now_fast_options(response: Response):
+def scrape_now_fast_options(request: Request, response: Response):
+    """OPTIONS handler for scrape-now-fast endpoint"""
+    trace_id = generate_trace_id()
+    response.headers["X-Trace-Id"] = trace_id
     response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     return Response(status_code=200)
 
 @router.get("/scrape-now-fast")
@@ -1401,39 +1422,87 @@ async def scrape_now_fast_get():
     )
 
 @router.options("/admin/diag-ef")
-def diag_ef_options(response: Response):
+def diag_ef_options(request: Request, response: Response):
+    """OPTIONS handler for admin diag-ef endpoint"""
+    trace_id = generate_trace_id()
+    response.headers["X-Trace-Id"] = trace_id
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     return Response(status_code=200)
 
 @router.options("/admin/diag-db")
-def diag_db_options(response: Response):
+def diag_db_options(request: Request, response: Response):
+    """OPTIONS handler for admin diag-db endpoint"""
+    trace_id = generate_trace_id()
+    response.headers["X-Trace-Id"] = trace_id
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     return Response(status_code=200)
 
 @router.options("/admin/logs")
-def logs_options(response: Response):
+def logs_options(request: Request, response: Response):
+    """OPTIONS handler for admin logs endpoint"""
+    trace_id = generate_trace_id()
+    response.headers["X-Trace-Id"] = trace_id
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     return Response(status_code=200)
 
 @router.options("/admin/tracked-queries")
-def tq_options(response: Response):
+def tq_options(request: Request, response: Response):
+    """OPTIONS handler for admin tracked-queries endpoint"""
+    trace_id = generate_trace_id()
+    response.headers["X-Trace-Id"] = trace_id
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     return Response(status_code=200)
 
 @router.options("/admin/health")
-def health_options(response: Response):
+def health_options(request: Request, response: Response):
+    """OPTIONS handler for admin health endpoint"""
+    trace_id = generate_trace_id()
+    response.headers["X-Trace-Id"] = trace_id
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     return Response(status_code=200)
 
 @router.options("/admin/merge-cards")
-def merge_cards_options(response: Response):
+def merge_cards_options(request: Request, response: Response):
+    """OPTIONS handler for admin merge-cards endpoint"""
+    trace_id = generate_trace_id()
+    response.headers["X-Trace-Id"] = trace_id
     response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     return Response(status_code=200)
 
 @router.get("/admin/logs")
@@ -3660,15 +3729,31 @@ async def admin_diag_ef(request: Request):
 
 
 @router.options("/ingest-items")
-def ingest_items_options(response: Response):
+def ingest_items_options(request: Request, response: Response):
+    """OPTIONS handler for ingest-items endpoint"""
+    trace_id = generate_trace_id()
+    response.headers["X-Trace-Id"] = trace_id
     response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     return Response(status_code=200)
 
 @router.options("/admin/{rest_of_path:path}")
-def admin_wildcard_options(rest_of_path: str, response: Response):
+def admin_wildcard_options(rest_of_path: str, request: Request, response: Response):
+    """OPTIONS handler for admin wildcard endpoint"""
+    trace_id = generate_trace_id()
+    response.headers["X-Trace-Id"] = trace_id
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
+    response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     return Response(status_code=200)
 
 @router.post("/ingest")
@@ -3858,24 +3943,45 @@ async def ingest(request: IngestRequest, http_request: Request):
         )
 
 @router.options("/ingest")
-def ingest_options(response: Response):
+def ingest_options(request: Request, response: Response):
+    """OPTIONS handler for ingest endpoint"""
+    trace_id = generate_trace_id()
+    response.headers["X-Trace-Id"] = trace_id
     response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     return Response(status_code=200)
 
 @router.options("/admin/cards")
-def admin_cards_options(response: Response):
+def admin_cards_options(request: Request, response: Response):
+    """OPTIONS handler for admin cards endpoint"""
+    trace_id = generate_trace_id()
+    response.headers["X-Trace-Id"] = trace_id
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     return Response(status_code=200)
 
 @router.options("/admin/listings")
-def admin_listings_options(response: Response):
+def admin_listings_options(request: Request, response: Response):
+    """OPTIONS handler for admin listings endpoint"""
+    trace_id = generate_trace_id()
+    response.headers["X-Trace-Id"] = trace_id
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    # Echo the origin for CORS
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     return Response(status_code=200)
 
 @router.get("/debug/ingest-sample")
