@@ -4701,8 +4701,10 @@ async def options_catch_all(path: str, request: Request):
         response.headers["Access-Control-Allow-Origin"] = origin
         return response
     else:
+        # Log the CORS denial but still return 200 to prevent browser CORS errors
         print(f"[api] CORS denied for catch-all OPTIONS /{path}: origin={origin} (trace: {trace_id})")
-        return Response(status_code=400)
+        # Return 200 with minimal CORS headers to prevent browser errors
+        return response
 
 # Simple test endpoint to verify app is working
 @app.get("/test")
