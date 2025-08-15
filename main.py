@@ -1426,11 +1426,16 @@ def scrape_now_options(request: Request, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return Response(status_code=200)
+        return Response(status_code=200)
+    else:
+        print(f"[api] CORS denied for OPTIONS /scrape-now: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 @router.get("/scrape-now")
 async def scrape_now_get():
@@ -1453,11 +1458,16 @@ def scrape_now_trailing_options(request: Request, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return Response(status_code=200)
+        return Response(status_code=200)
+    else:
+        print(f"[api] CORS denied for OPTIONS /scrape-now/: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 @router.options("/scrape-now-fast")
 def scrape_now_fast_options(request: Request, response: Response):
@@ -1467,11 +1477,16 @@ def scrape_now_fast_options(request: Request, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return Response(status_code=200)
+        return Response(status_code=200)
+    else:
+        print(f"[api] CORS denied for OPTIONS /scrape-now-fast: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 @router.get("/scrape-now-fast")
 async def scrape_now_fast_get():
@@ -1494,11 +1509,16 @@ def diag_ef_options(request: Request, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return Response(status_code=200)
+        return Response(status_code=200)
+    else:
+        print(f"[api] CORS denied for OPTIONS /admin/diag-ef: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 @router.options("/admin/diag-db")
 def diag_db_options(request: Request, response: Response):
@@ -1508,11 +1528,16 @@ def diag_db_options(request: Request, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return Response(status_code=200)
+        return Response(status_code=200)
+    else:
+        print(f"[api] CORS denied for OPTIONS /admin/diag-db: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 @router.options("/admin/logs")
 def logs_options(request: Request, response: Response):
@@ -1522,11 +1547,16 @@ def logs_options(request: Request, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return Response(status_code=200)
+        return Response(status_code=200)
+    else:
+        print(f"[api] CORS denied for OPTIONS /admin/logs: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 @router.options("/admin/tracked-queries")
 def tq_options(request: Request, response: Response):
@@ -1536,11 +1566,16 @@ def tq_options(request: Request, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return Response(status_code=200)
+        return Response(status_code=200)
+    else:
+        print(f"[api] CORS denied for OPTIONS /admin/tracked-queries: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 @router.options("/admin/health")
 def health_options(request: Request, response: Response):
@@ -1550,11 +1585,16 @@ def health_options(request: Request, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return Response(status_code=200)
+        return Response(status_code=200)
+    else:
+        print(f"[api] CORS denied for OPTIONS /admin/health: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 @router.options("/admin/merge-cards")
 def merge_cards_options(request: Request, response: Response):
@@ -1564,11 +1604,16 @@ def merge_cards_options(request: Request, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return Response(status_code=200)
+        return Response(status_code=200)
+    else:
+        print(f"[api] CORS denied for OPTIONS /admin/merge-cards: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 @router.get("/admin/logs")
 async def admin_logs(request: Request, limit: int = 200):
@@ -3801,11 +3846,16 @@ def ingest_items_options(request: Request, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return Response(status_code=200)
+        return Response(status_code=200)
+    else:
+        print(f"[api] CORS denied for OPTIONS /ingest-items: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 @router.options("/admin/{rest_of_path:path}")
 def admin_wildcard_options(rest_of_path: str, request: Request, response: Response):
@@ -3815,11 +3865,16 @@ def admin_wildcard_options(rest_of_path: str, request: Request, response: Respon
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Token, x-function-secret"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return Response(status_code=200)
+        return Response(status_code=200)
+    else:
+        print(f"[api] CORS denied for OPTIONS /admin/{rest_of_path}: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 @router.post("/ingest")
 async def ingest(request: IngestRequest, http_request: Request):
@@ -3982,11 +4037,16 @@ def ingest_options(request: Request, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "POST,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return Response(status_code=200)
+        return Response(status_code=200)
+    else:
+        print(f"[api] CORS denied for OPTIONS /ingest: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 @router.options("/admin/cards")
 def admin_cards_options(request: Request, response: Response):
@@ -3996,11 +4056,16 @@ def admin_cards_options(request: Request, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return Response(status_code=200)
+        return Response(status_code=200)
+    else:
+        print(f"[api] CORS denied for OPTIONS /admin/cards: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 @router.options("/admin/listings")
 def admin_listings_options(request: Request, response: Response):
@@ -4010,11 +4075,16 @@ def admin_listings_options(request: Request, response: Response):
     response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return Response(status_code=200)
+        return Response(status_code=200)
+    else:
+        print(f"[api] CORS denied for OPTIONS /admin/listings: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 @router.get("/debug/ingest-sample")
 async def debug_ingest_sample():
@@ -4767,11 +4837,16 @@ async def options_catch_all(path: str, request: Request):
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token"
     response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
-    # Echo the origin for CORS
+    response.headers["Vary"] = "Origin"
+    
+    # Check if origin is allowed before setting CORS headers
     origin = request.headers.get("origin")
-    if origin:
+    if origin and _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-    return response
+        return response
+    else:
+        print(f"[api] CORS denied for catch-all OPTIONS /{path}: origin={origin} (trace: {trace_id})")
+        return Response(status_code=400)
 
 # Simple test endpoint to verify app is working
 @app.get("/test")
