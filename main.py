@@ -341,8 +341,9 @@ def _is_allowed_origin(origin: str | None) -> bool:
     if origin in ALLOWED_ORIGINS:
         return True
     
-    # Check wildcard patterns for Lovable domains
-    if origin.endswith(".lovable.app") or origin.endswith(".lovableproject.com"):
+    # Check wildcard patterns for Lovable domains with better subdomain handling
+    # This handles nested subdomains like id-preview--ed2352f3-a196-4248-bcf1-3cf010ca8901.lovable.app
+    if ".lovable.app" in origin or ".lovableproject.com" in origin:
         return True
     
     # Check if origin matches any wildcard patterns in ALLOWED_ORIGINS
@@ -388,7 +389,7 @@ def _origin_allowed(origin: str) -> bool:
         "http://localhost:5173",
     ]
     
-    # Wildcard patterns
+    # Wildcard patterns with better subdomain handling
     wildcards = [
         ".lovable.app",
         ".lovableproject.com",
@@ -397,7 +398,8 @@ def _origin_allowed(origin: str) -> bool:
     if origin in allow:
         return True
     
-    return any(origin.endswith(w) for w in wildcards)
+    # Use 'in' instead of 'endswith' to handle nested subdomains
+    return any(w in origin for w in wildcards)
 
 def corsify(response: JSONResponse, request: Request) -> JSONResponse:
     """Add CORS headers to any response if origin is allowed"""
