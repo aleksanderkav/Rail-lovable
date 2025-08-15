@@ -375,6 +375,54 @@ def cors_guard(origin: str = Header(None), response: Response = None, request: R
 
 # --- BEGIN CONSISTENT BEHAVIOR UTILITIES ---
 
+# Universal CORS helpers for consistent CORS handling across all responses
+def _origin_allowed(origin: str) -> bool:
+    """Check if origin is allowed (exact match or wildcard)"""
+    if not origin:
+        return False
+    
+    # Exact matches
+    allow = [
+        "https://card-pulse-watch.lovable.app",
+        "http://localhost:3000",
+        "http://localhost:5173",
+    ]
+    
+    # Wildcard patterns
+    wildcards = [
+        ".lovable.app",
+        ".lovableproject.com",
+    ]
+    
+    if origin in allow:
+        return True
+    
+    return any(origin.endswith(w) for w in wildcards)
+
+def corsify(response: Response, request: Request) -> Response:
+    """Add CORS headers to any response if origin is allowed"""
+    origin = request.headers.get("origin", "")
+    if _origin_allowed(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Expose-Headers"] = "X-Trace-Id"
+    return response
+
+def create_success_response(payload: dict, trace: str, request: Request, status_code: int = 200) -> Response:
+    """Create success response with CORS headers"""
+    resp = JSONResponse({"ok": True, "trace": trace, **payload}, status_code=status_code)
+    resp.headers["X-Trace-Id"] = trace
+    return corsify(resp, request)
+
+def create_error_response(detail: str, status_code: int, trace: str, request: Request, extra: dict | None = None) -> Response:
+    """Create error response with CORS headers"""
+    body = {"ok": False, "detail": detail, "trace": trace}
+    if extra:
+        body.update(extra)
+    resp = JSONResponse(body, status_code=status_code)
+    resp.headers["X-Trace-Id"] = trace
+    return corsify(resp, request)
+
 def generate_trace_id() -> str:
     """Generate a consistent trace ID for all endpoints"""
     try:
@@ -383,7 +431,8 @@ def generate_trace_id() -> str:
         print(f"[generate_trace_id] Error: {e}")
         return str(uuid.uuid4())[:8] if 'uuid' in globals() else "00000000"
 
-def create_error_response(detail: str, status_code: int = 400, trace_id: str = None) -> JSONResponse:
+# Legacy functions - kept for backward compatibility
+def create_error_response_legacy(detail: str, status_code: int = 400, trace_id: str = None) -> JSONResponse:
     """Create consistent error responses with ok, detail, and trace"""
     trace_id = trace_id or generate_trace_id()
     return JSONResponse(
@@ -396,7 +445,7 @@ def create_error_response(detail: str, status_code: int = 400, trace_id: str = N
         headers={"X-Trace-Id": trace_id}
     )
 
-def create_success_response(data: dict, trace_id: str = None) -> JSONResponse:
+def create_success_response_legacy(data: dict, trace_id: str = None) -> JSONResponse:
     """Create consistent success responses with ok, data, and trace"""
     trace_id = trace_id or generate_trace_id()
     response_data = {"ok": True, "trace": trace_id}
@@ -3784,7 +3833,7 @@ async def ingest(request: IngestRequest, http_request: Request):
     # Use consistent admin token validation
     is_valid, trace_id, error_message = validate_admin_token(http_request)
     if not is_valid:
-        return create_error_response(error_message, 401, trace_id)
+        return create_error_response(error_message, 401, trace_id, http_request)
     
     # Check if this is a dry run
     dry_run = http_request.query_params.get("dryRun", "").lower() in ["1", "true", "t", "yes", "on"]
@@ -3886,33 +3935,19 @@ async def ingest(request: IngestRequest, http_request: Request):
         }
         
         if not valid_items:
-            return JSONResponse(
-                content=response_data,
-                headers={"X-Trace-Id": trace_id}
-            )
+            return create_success_response(response_data, trace_id, http_request)
         
         if dry_run:
             # Return summary without database operations
             response_data["card_id"] = "dry-run-simulation"
-            return JSONResponse(
-                content=response_data,
-                headers={"X-Trace-Id": trace_id}
-            )
+            return create_success_response(response_data, trace_id, http_request)
         
         # Database operations using service role
         service_role_key = get_service_role_key()
         supabase_url = get_supabase_url()
         
         if not service_role_key or not supabase_url:
-            return JSONResponse(
-                content={
-                    "ok": False,
-                    "detail": "Service not configured",
-                    "trace": trace_id
-                },
-                status_code=500,
-                headers={"X-Trace-Id": trace_id}
-            )
+            return create_error_response("Service not configured", 500, trace_id, http_request)
         
         # Step 1: Upsert card
         card_id = await upsert_card(
@@ -3921,15 +3956,7 @@ async def ingest(request: IngestRequest, http_request: Request):
         )
         
         if not card_id:
-            return JSONResponse(
-                content={
-                    "ok": False,
-                    "detail": "Failed to create/update card",
-                    "trace": trace_id
-                },
-                status_code=500,
-                headers={"X-Trace-Id": trace_id}
-            )
+            return create_error_response("Failed to create/update card", 500, trace_id, http_request)
         
         # Step 2: Upsert listings
         listings_created = await upsert_listings(
@@ -3941,22 +3968,11 @@ async def ingest(request: IngestRequest, http_request: Request):
         
         response_data["card_id"] = card_id
         
-        return JSONResponse(
-            content=response_data,
-            headers={"X-Trace-Id": trace_id}
-        )
+        return create_success_response(response_data, trace_id, http_request)
         
     except Exception as e:
         print(f"[ingest] ERROR: {e} (trace: {trace_id})")
-        return JSONResponse(
-            content={
-                "ok": False,
-                "detail": str(e),
-                "trace": trace_id
-            },
-            status_code=500,
-            headers={"X-Trace-Id": trace_id}
-        )
+        return create_error_response(str(e), 500, trace_id, http_request)
 
 @router.options("/ingest")
 def ingest_options(request: Request, response: Response):
@@ -4044,15 +4060,7 @@ async def admin_cards(request: Request, search: Optional[str] = None, limit: int
     expected_token = get_admin_proxy_token()
     
     if not admin_token or admin_token != expected_token:
-        return JSONResponse(
-            content={
-                "ok": False,
-                "detail": "Unauthorized",
-                "trace": trace_id
-            },
-            status_code=401,
-            headers={"X-Trace-Id": trace_id}
-        )
+        return create_error_response("Unauthorized", 401, trace_id, request)
     
     # Validate limit parameter
     if limit > 1000:
@@ -4068,15 +4076,7 @@ async def admin_cards(request: Request, search: Optional[str] = None, limit: int
         supabase_url = get_supabase_url()
         
         if not service_role_key or not supabase_url:
-            return JSONResponse(
-                content={
-                    "ok": False,
-                    "detail": "Service not configured",
-                    "trace": trace_id
-                },
-                status_code=500,
-                headers={"X-Trace-Id": trace_id}
-            )
+            return create_error_response("Service not configured", 500, trace_id, request)
         
         # Build Supabase REST API URL
         rest_url = f"{supabase_url}/rest/v1/cards"
@@ -4106,41 +4106,20 @@ async def admin_cards(request: Request, search: Optional[str] = None, limit: int
         
         if response.status_code == 200:
             cards = response.json()
-            print(f"[admin] Retrieved {len(cards)} cards (trace: {trace_id})")
-            return JSONResponse(
-                content={
-                    "ok": True,
-                    "items": cards,
-                    "count": len(cards),
-                    "trace": trace_id
-                },
-                headers={"X-Trace-Id": trace_id}
-            )
+            print(f"[api] Retrieved {len(cards)} cards (trace: {trace_id})")
+            return create_success_response({
+                "items": cards,
+                "count": len(cards)
+            }, trace_id, request)
         else:
             # Return error with consistent shape
             sb_request_id = response.headers.get("sb-request-id", "unknown")
             print(f"[admin] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
-            return JSONResponse(
-                content={
-                    "ok": False,
-                    "detail": f"Database error: {response.status_code}",
-                    "trace": trace_id
-                },
-                status_code=500,
-                headers={"X-Trace-Id": trace_id}
-            )
+            return create_error_response(f"Database error: {response.status_code}", 500, trace_id, request)
         
     except Exception as e:
         print(f"[admin] /admin/cards error: {e} (trace: {trace_id})")
-        return JSONResponse(
-            content={
-                "ok": False,
-                "detail": str(e),
-                "trace": trace_id
-            },
-            status_code=500,
-            headers={"X-Trace-Id": trace_id}
-        )
+        return create_error_response(str(e), 500, trace_id, request)
 
 @router.get("/admin/listings")
 async def admin_listings(request: Request, card_id: str, limit: int = 200):
