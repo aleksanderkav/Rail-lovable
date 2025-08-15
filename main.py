@@ -377,7 +377,11 @@ def cors_guard(origin: str = Header(None), response: Response = None, request: R
 
 def generate_trace_id() -> str:
     """Generate a consistent trace ID for all endpoints"""
-    return str(uuid.uuid4())[:8]
+    try:
+        return str(uuid.uuid4())[:8]
+    except Exception as e:
+        print(f"[generate_trace_id] Error: {e}")
+        return str(uuid.uuid4())[:8] if 'uuid' in globals() else "00000000"
 
 def create_error_response(detail: str, status_code: int = 400, trace_id: str = None) -> JSONResponse:
     """Create consistent error responses with ok, detail, and trace"""
@@ -407,14 +411,26 @@ def validate_admin_token(request: Request) -> tuple[bool, str, str]:
     Validate admin token and return (is_valid, trace_id, error_message)
     Use this in all admin endpoints for consistent validation
     """
-    trace_id = generate_trace_id()
-    admin_token = request.headers.get("X-Admin-Token")
-    expected_token = get_admin_proxy_token()
-    
-    if not admin_token or admin_token != expected_token:
-        return False, trace_id, "Unauthorized - missing or invalid admin token"
-    
-    return True, trace_id, ""
+    try:
+        trace_id = generate_trace_id()
+        admin_token = request.headers.get("X-Admin-Token")
+        expected_token = get_admin_proxy_token()
+        
+        if not admin_token or admin_token != expected_token:
+            return False, trace_id, "Unauthorized - missing or invalid admin token"
+        
+        return True, trace_id, ""
+    except Exception as e:
+        print(f"[validate_admin_token] Error: {e}")
+        # Fallback to basic validation
+        trace_id = str(uuid.uuid4())[:8]
+        admin_token = request.headers.get("X-Admin-Token")
+        expected_token = os.getenv("ADMIN_PROXY_TOKEN", "").strip()
+        
+        if not admin_token or admin_token != expected_token:
+            return False, trace_id, "Unauthorized - missing or invalid admin token"
+        
+        return True, trace_id, ""
 
 def normalize_item_fields(item: dict, item_index: int = 0, trace_id: str = None) -> tuple[dict, dict]:
     """
