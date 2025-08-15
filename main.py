@@ -373,6 +373,152 @@ def cors_guard(origin: str = Header(None), response: Response = None, request: R
         print(f"[api] CORS guard error: {e}")
 # --- END CORS GUARD ---
 
+# --- BEGIN CONSISTENT BEHAVIOR UTILITIES ---
+
+def generate_trace_id() -> str:
+    """Generate a consistent trace ID for all endpoints"""
+    return str(uuid.uuid4())[:8]
+
+def create_error_response(detail: str, status_code: int = 400, trace_id: str = None) -> JSONResponse:
+    """Create consistent error responses with ok, detail, and trace"""
+    trace_id = trace_id or generate_trace_id()
+    return JSONResponse(
+        content={
+            "ok": False,
+            "detail": detail,
+            "trace": trace_id
+        },
+        status_code=status_code,
+        headers={"X-Trace-Id": trace_id}
+    )
+
+def create_success_response(data: dict, trace_id: str = None) -> JSONResponse:
+    """Create consistent success responses with ok, data, and trace"""
+    trace_id = trace_id or generate_trace_id()
+    response_data = {"ok": True, "trace": trace_id}
+    response_data.update(data)
+    return JSONResponse(
+        content=response_data,
+        headers={"X-Trace-Id": trace_id}
+    )
+
+def validate_admin_token(request: Request) -> tuple[bool, str, str]:
+    """
+    Validate admin token and return (is_valid, trace_id, error_message)
+    Use this in all admin endpoints for consistent validation
+    """
+    trace_id = generate_trace_id()
+    admin_token = request.headers.get("X-Admin-Token")
+    expected_token = get_admin_proxy_token()
+    
+    if not admin_token or admin_token != expected_token:
+        return False, trace_id, "Unauthorized - missing or invalid admin token"
+    
+    return True, trace_id, ""
+
+def normalize_item_fields(item: dict, item_index: int = 0, trace_id: str = None) -> tuple[dict, dict]:
+    """
+    Apply consistent normalization to item fields
+    Returns (normalized_item, skip_reason) where skip_reason is None if item is valid
+    
+    This ensures all endpoints use the same normalization logic
+    """
+    trace_id = trace_id or generate_trace_id()
+    
+    # Define field mappings - centralized for consistency
+    URL_SOURCES = ['url', 'permalink', 'href', 'link', 'debug_url', 'viewItemURL', 'itemWebUrl', 'item_url', 'productUrl', 'linkHref']
+    ID_SOURCES = ['source_listing_id', 'listing_id', 'id', 'itemId', 'item_id', 'ebay_id', 'itemIdStr']
+    
+    # Find URL from multiple sources
+    url = None
+    url_source_used = None
+    for source in URL_SOURCES:
+        if item.get(source):
+            url = item.get(source)
+            url_source_used = source
+            if item_index < 3:  # Log first 3 items
+                print(f"[normalize] item#{item_index+1} using url={source}")
+            break
+    
+    # Find ID from multiple sources
+    source_listing_id = None
+    id_source_used = None
+    for source in ID_SOURCES:
+        if item.get(source):
+            source_listing_id = str(item.get(source))
+            id_source_used = source
+            if item_index < 3:  # Log first 3 items
+                print(f"[normalize] item#{item_index+1} using id={source}")
+            break
+    
+    # Derive source_listing_id from URL if still empty
+    if not source_listing_id and url:
+        ebay_id = extract_ebay_id(url)
+        if ebay_id:
+            source_listing_id = ebay_id
+            if item_index < 3:
+                print(f"[normalize] item#{item_index+1} derived id from URL: {source_listing_id}")
+    
+    # Synthesize URL from ID if missing but ID present
+    if not url and source_listing_id:
+        url = f"https://www.ebay.com/itm/{source_listing_id}"
+        if item_index < 3:
+            print(f"[normalize] item#{item_index+1} synthesized URL from ID: {url}")
+    
+    # Check for required fields AFTER applying all fallbacks
+    if not url:
+        return None, {"reason": "no_url", "item_index": item_index, "title": item.get('title', 'unknown')}
+    
+    if not source_listing_id:
+        return None, {"reason": "no_id", "item_index": item_index, "title": item.get('title', 'unknown')}
+    
+    # Create normalized item with consistent field names
+    normalized_item = {
+        "title": item.get("title") or item.get("name") or "",
+        "url": url,
+        "source_listing_id": source_listing_id,
+        "price": parse_price(str(item.get("price") or item.get("amount") or ""))[0],
+        "currency": parse_price(str(item.get("price") or item.get("amount") or ""))[1] or "USD",
+        "sold": bool(item.get("sold") or item.get("is_sold")),
+        "ended_at": item.get("ended_at") or item.get("endTime"),
+        # Preserve original sources for debugging
+        "_normalization_debug": {
+            "url_source": url_source_used,
+            "id_source": id_source_used,
+            "url_derived": url_source_used is None,
+            "id_derived": id_source_used is None
+        }
+    }
+    
+    return normalized_item, None
+
+def apply_normalization_safety_net(items: list, trace_id: str = None) -> tuple[list, dict]:
+    """
+    Apply normalization safety-net to a list of items
+    Returns (normalized_items, skip_stats)
+    
+    This ensures consistent normalization across all endpoints
+    """
+    trace_id = trace_id or generate_trace_id()
+    normalized_items = []
+    skip_stats = {"no_url": 0, "no_id": 0, "total_processed": len(items)}
+    
+    for i, item in enumerate(items):
+        normalized_item, skip_reason = normalize_item_fields(item, i, trace_id)
+        
+        if skip_reason:
+            skip_stats[skip_reason["reason"]] += 1
+            if i < 3:  # Log first 3 skips
+                print(f"[normalize] SKIP {skip_reason['reason']} item#{i+1} '{skip_reason['title']}' (trace: {trace_id})")
+            continue
+        
+        normalized_items.append(normalized_item)
+    
+    print(f"[normalize] Safety-net applied: accepted={len(normalized_items)} no_url={skip_stats['no_url']} no_id={skip_stats['no_id']} (trace: {trace_id})")
+    return normalized_items, skip_stats
+
+# --- END CONSISTENT BEHAVIOR UTILITIES ---
+
 # Add a very loud startup print so we see logs even if something later fails
 def startup_log():
     print("[api] Booting… PORT=", os.getenv("PORT"), " PYTHONUNBUFFERED=", os.getenv("PYTHONUNBUFFERED"))
@@ -1293,19 +1439,12 @@ def merge_cards_options(response: Response):
 @router.get("/admin/logs")
 async def admin_logs(request: Request, limit: int = 200):
     """Admin endpoint to proxy logs requests to Supabase REST API"""
-    trace_id = str(uuid.uuid4())[:8]
+    # Use consistent admin token validation
+    is_valid, trace_id, error_message = validate_admin_token(request)
+    if not is_valid:
+        return create_error_response(error_message, 401, trace_id)
+    
     client_ip = request.client.host if request.client else "unknown"
-    
-    # Check admin token
-    admin_token = request.headers.get("X-Admin-Token")
-    expected_token = get_admin_proxy_token()
-    
-    if not admin_token or admin_token != expected_token:
-        return JSONResponse(
-            content={"logs": [], "error": "Unauthorized", "trace": trace_id},
-            status_code=401,
-            headers={"x-trace-id": trace_id}
-        )
     
     # Validate limit parameter
     if limit > 1000:
@@ -1348,67 +1487,37 @@ async def admin_logs(request: Request, limit: int = 200):
         if response.status_code == 200:
             logs = response.json()
             print(f"[api] Retrieved {len(logs)} logs (trace: {trace_id})")
-            return JSONResponse(
-                content={
-                    "logs": logs,
-                    "count": len(logs),
-                    "trace": trace_id
-                },
-                headers={
-                    "x-trace-id": trace_id,
-                    "Content-Type": "application/json"
-                }
-            )
+            return create_success_response({
+                "logs": logs,
+                "count": len(logs)
+            }, trace_id)
         else:
             # Return empty array with error details
             sb_request_id = response.headers.get("sb-request-id", "unknown")
             print(f"[api] Supabase REST error: {response.status_code} - {response.text} (sb-request-id: {sb_request_id}, trace: {trace_id})")
-            return JSONResponse(
-                content={
-                    "logs": [],
-                    "error": f"Supabase REST error: {response.status_code}",
-                    "sb_request_id": sb_request_id,
-                    "trace": trace_id
-                },
-                headers={
-                    "x-trace-id": trace_id,
-                    "Content-Type": "application/json"
-                },
-                status_code=200  # Always 200 to prevent UI crashes
-            )
+            return create_success_response({
+                "logs": [],
+                "error": f"Supabase REST error: {response.status_code}",
+                "sb_request_id": sb_request_id
+            }, trace_id)
         
     except Exception as e:
         print(f"[api] /admin/logs error: {e} (trace: {trace_id})")
-        return JSONResponse(
-            content={
-                "logs": [],
-                "error": str(e),
-                "sb_request_id": "unknown",
-                "trace": trace_id
-            },
-            headers={
-                "x-trace-id": trace_id,
-                "Content-Type": "application/json"
-            },
-            status_code=200  # Always 200 to prevent UI crashes
-        )
+        return create_success_response({
+            "logs": [],
+            "error": str(e),
+            "sb_request_id": "unknown"
+        }, trace_id)
 
 @router.get("/admin/tracked-queries")
 async def admin_tracked_queries(request: Request, limit: int = 200):
     """Admin endpoint to proxy tracked-queries requests to Supabase REST API"""
-    trace_id = str(uuid.uuid4())[:8]
+    # Use consistent admin token validation
+    is_valid, trace_id, error_message = validate_admin_token(request)
+    if not is_valid:
+        return create_error_response(error_message, 401, trace_id)
+    
     client_ip = request.client.host if request.client else "unknown"
-    
-    # Check admin token
-    admin_token = request.headers.get("X-Admin-Token")
-    expected_token = get_admin_proxy_token()
-    
-    if not admin_token or admin_token != expected_token:
-        return JSONResponse(
-            content={"queries": [], "error": "Unauthorized", "trace": trace_id},
-            status_code=401,
-            headers={"x-trace-id": trace_id}
-        )
     
     # Validate limit parameter
     if limit > 1000:
@@ -1451,17 +1560,10 @@ async def admin_tracked_queries(request: Request, limit: int = 200):
         if response.status_code == 200:
             queries = response.json()
             print(f"[api] Retrieved {len(queries)} tracked queries (trace: {trace_id})")
-            return JSONResponse(
-                content={
-                    "queries": queries,
-                    "count": len(queries),
-                    "trace": trace_id
-                },
-                headers={
-                    "x-trace-id": trace_id,
-                    "Content-Type": "application/json"
-                }
-            )
+            return create_success_response({
+                "queries": queries,
+                "count": len(queries)
+            }, trace_id)
         else:
             # Return empty array with error details
             sb_request_id = response.headers.get("sb-request-id", "unknown")
@@ -3578,20 +3680,10 @@ async def ingest(request: IngestRequest, http_request: Request):
     # Log request details
     print(f"[api] /ingest request from {client_ip} query='{request.query}' marketplace='{request.marketplace}' items={len(request.items)} (trace: {trace_id})")
     
-    # Validate admin token
-    admin_token = http_request.headers.get("X-Admin-Token")
-    expected_token = get_admin_proxy_token()
-    
-    if not admin_token or admin_token != expected_token:
-        return JSONResponse(
-            content={
-                "ok": False,
-                "error": "Unauthorized",
-                "trace": trace_id
-            },
-            status_code=401,
-            headers={"x-trace-id": trace_id}
-        )
+    # Use consistent admin token validation
+    is_valid, trace_id, error_message = validate_admin_token(http_request)
+    if not is_valid:
+        return create_error_response(error_message, 401, trace_id)
     
     # Check if this is a dry run
     dry_run = http_request.query_params.get("dryRun", "").lower() in ["1", "true", "t", "yes", "on"]
@@ -3600,120 +3692,25 @@ async def ingest(request: IngestRequest, http_request: Request):
         print(f"[ingest] DRY RUN mode - simulating ingestion (trace: {trace_id})")
     
     try:
-        # Input normalization with fallbacks
-        valid_items = []
-        skip_counters = {"no_url": 0, "no_id": 0, "dup": 0}
-        seen_ids = set()
+        # Use consistent normalization utility
+        normalized_items, skip_stats = apply_normalization_safety_net(request.items, trace_id)
         
-        for i, item in enumerate(request.items):
-            # Normalize title with fallbacks
-            title = item.get('title') or item.get('name') or ''
-            
-            # Normalize URL with fallbacks - expanded to include more URL fields
-            url = None
-            url_sources = ['url', 'permalink', 'href', 'link', 'debug_url', 'viewItemURL', 'itemWebUrl', 'item_url', 'productUrl', 'linkHref']
-            for url_key in url_sources:
-                if item.get(url_key):
-                    url = item.get(url_key)
-                    if i < 3:  # Log first 3 items
-                        print(f"[ingest] item#{i+1} using url={url_key}")
-                    break
-            
-            # Normalize source_listing_id with fallbacks
-            source_listing_id = None
-            id_sources = ['source_listing_id', 'listing_id', 'id', 'itemId', 'item_id', 'ebay_id', 'itemIdStr']
-            for id_key in id_sources:
-                if item.get(id_key):
-                    source_listing_id = str(item.get(id_key))
-                    if i < 3:  # Log first 3 items
-                        print(f"[ingest] item#{i+1} using id={id_key}")
-                    break
-            
-            # Derive source_listing_id from URL if still empty - using enhanced regex patterns
-            if not source_listing_id and url:
-                # Use the same enhanced regex patterns as defined in the frontend
-                ebay_id = extract_ebay_id(url)
-                if ebay_id:
-                    source_listing_id = ebay_id
-                    if i < 3:  # Log first 3 items
-                        print(f"[ingest] item#{i+1} derived id from URL: {source_listing_id}")
-            
-            # Synthesize URL from ID if missing but ID present
-            if not url and source_listing_id:
-                url = f"https://www.ebay.com/itm/{source_listing_id}"
-                if i < 3:  # Log first 3 items
-                    print(f"[ingest] item#{i+1} synthesized URL from ID: {url}")
-            
-            # Check for required fields AFTER applying all fallbacks
-            if not url:
-                skip_counters["no_url"] += 1
+        # Check for duplicates
+        valid_items = []
+        seen_ids = set()
+        for item in normalized_items:
+            if item["source_listing_id"] in seen_ids:
+                skip_stats["dup"] = 1  # Add dup counter if not present
                 continue
-            
-            if not source_listing_id:
-                skip_counters["no_id"] += 1
-                continue
-            
-            # Check for duplicates
-            if source_listing_id in seen_ids:
-                skip_counters["dup"] += 1
-                continue
-            
-            seen_ids.add(source_listing_id)
-            
-            # Parse price and currency
-            price = None
-            price_raw = item.get('price') or item.get('amount')
-            if price_raw:
-                try:
-                    # Remove currency symbols and parse
-                    price_str = str(price_raw).strip()
-                    # Remove common currency symbols
-                    for symbol in ['$', '£', '€', '¥', 'kr', '₹', '₽']:
-                        price_str = price_str.replace(symbol, '')
-                    price = float(price_str)
-                except (ValueError, TypeError):
-                    pass
-            
-            # Parse currency with fallbacks
-            currency = "USD"  # default
-            currency_raw = item.get('currency')
-            if currency_raw:
-                currency = str(currency_raw).upper()
-            elif price_raw:
-                # Detect from price string
-                price_str = str(price_raw).upper()
-                if '$' in price_str:
-                    currency = "USD"
-                elif '£' in price_str:
-                    currency = "GBP"
-                elif '€' in price_str:
-                    currency = "EUR"
-                elif '¥' in price_str:
-                    currency = "JPY"
-                elif 'kr' in price_str or 'NOK' in price_str:
-                    currency = "NOK"
-            
-            # Parse sold status
-            sold = bool(item.get('sold') or item.get('is_sold'))
-            
-            # Parse ended_at
-            ended_at = item.get('ended_at') or item.get('endTime') or None
-            
-            # Canonicalize URL if it looks like eBay
-            if url and ('ebay.com' in url or 'ebay.' in url):
-                url = canonicalize_ebay_url(url)
-            
-            # Create validated item
-            valid_item = {
-                "title": title,
-                "url": url,
-                "source_listing_id": source_listing_id,
-                "price": price,
-                "currency": currency,
-                "sold": sold,
-                "ended_at": ended_at
-            }
-            valid_items.append(valid_item)
+            seen_ids.add(item["source_listing_id"])
+            valid_items.append(item)
+        
+        # Update skip counters for response
+        skip_counters = {
+            "no_url": skip_stats["no_url"],
+            "no_id": skip_stats["no_id"], 
+            "dup": skip_stats.get("dup", 0)
+        }
         
         # Log completion summary
         print(f"[api] /ingest accepted={len(valid_items)} skipped={skip_counters} (trace: {trace_id})")
